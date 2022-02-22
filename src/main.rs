@@ -5,7 +5,7 @@ use std::*;
 
 #[derive(Debug)]
 enum Error {
-    Unreachable,
+    Unreachable(&'static str),
     IoError(io::Error),
     NoInput,
 }
@@ -184,7 +184,7 @@ fn main() -> Result<(), Error> {
     let mut encoded_string = String::new();
     huffman_encoding
         .encode_words(&mut words.clone())
-        .map_err(|_| Error::Unreachable)?
+        .map_err(|_| Error::Unreachable("there shouldn't be words that has no encoding"))?
         .into_iter()
         .for_each(|code| encoded_string.push_str(&format!("{}", code)));
     println!("{}", encoded_string);

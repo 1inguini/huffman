@@ -47,19 +47,17 @@ impl<'a> HuffTree<'a> {
     }
 
     /// format Hufftree to string with each word and corresponding encoding
+    /// Each word-encoding relation is newwline seperated,
+    /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
     fn format_encodings(&self) -> String {
-        // fn helper(next: String, encodings: &HuffTree) -> String {
-        //     match encodings {
-        //         HuffTree::End(word) => word.to_string() + "\t" + &next + "\n",
-        //         HuffTree::Branch(rest, word) => {
-        //             word.to_string() + "\t" + &next + "0" + "\n" + &helper(next + "1", rest)
-        //         }
-        //     }
-        // }
-        // helper(String::new(), self)
         let mut result = String::new();
+        let mut line_sep = false;
         for (word, code) in self.into_iter() {
-            result = result + &format!("{}\t{}\n", word, code)
+            if line_sep {
+                result.push_str("\n");
+            };
+            line_sep = true;
+            result.push_str(&format!("{}\t{}", word, code));
         }
         result
     }
@@ -74,14 +72,6 @@ impl<'a> HuffTree<'a> {
             result.push(dict.get(word).ok_or(i)?.clone());
         }
         Ok(result)
-    }
-
-    fn encode_string(&self, string: &str) -> Option<String> {
-        let mut result = String::new();
-        for code in self.encode_words(&mut string.split_whitespace()).ok()? {
-            result = result + &format!("{}", code);
-        }
-        Some(result)
     }
 }
 
@@ -177,25 +167,27 @@ where
 }
 
 fn main() -> Result<(), Error> {
-    // get input from stdin
+    // get words from stdin
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .map_err(Error::IoError)?;
+    let words = input.split_whitespace();
     // derive the huffman encodings of words as a tree
-    let huffman_encoding: HuffTree =
-        HuffTree::new(&mut input.split_whitespace()).ok_or(Error::NoInput)?;
+    let huffman_encoding: HuffTree = HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
 
     // print each word and corresponding encoding
     println!("{}", huffman_encoding.format_encodings());
+    println!("");
 
     // print encoded string
-    println!(
-        "{}",
-        huffman_encoding
-            .encode_string(&input)
-            .ok_or(Error::Unreachable)?
-    );
+    let mut encoded_string = String::new();
+    huffman_encoding
+        .encode_words(&mut words.clone())
+        .map_err(|_| Error::Unreachable)?
+        .into_iter()
+        .for_each(|code| encoded_string.push_str(&format!("{}", code)));
+    println!("{}", encoded_string);
 
     return Ok(());
 }

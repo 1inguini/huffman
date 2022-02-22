@@ -46,13 +46,6 @@ impl<'a> HuffTree<'a> {
             .map(|rarest| helper(&mut words_occurrences, HuffTree::End(rarest)))
     }
 
-    fn into_iter(&'a self) -> HuffTreeIter<'a> {
-        HuffTreeIter::Some {
-            prefix_length: 0,
-            tail: self,
-        }
-    }
-
     /// format Hufftree to string with each word and corresponding encoding
     fn format_encodings(&self) -> String {
         // fn helper(next: String, encodings: &HuffTree) -> String {
@@ -91,6 +84,18 @@ impl<'a> HuffTree<'a> {
         Some(result)
     }
 }
+
+impl<'a> IntoIterator for &'a HuffTree<'a> {
+    type Item = (&'a str, HuffCode);
+    type IntoIter = HuffTreeIter<'a>;
+    fn into_iter(self) -> HuffTreeIter<'a> {
+        HuffTreeIter::Some {
+            prefix_length: 0,
+            tail: self,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct HuffCode {
     prefix_length: usize,

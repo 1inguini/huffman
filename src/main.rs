@@ -13,8 +13,8 @@ enum Error {
 // represent the Huffman encoding
 #[derive(Debug, Clone)]
 enum HuffTree<'a> {
-    Leaf(&'a str),
-    Node(Box<HuffTree<'a>>, &'a str),
+    End(&'a str),
+    Branch(&'a str, Box<HuffTree<'a>>),
 }
 
 impl<'a> HuffTree<'a> {
@@ -31,7 +31,7 @@ impl<'a> HuffTree<'a> {
                 None => rarest,
                 Some(rare) => helper(
                     words_sorted_by_occurences,
-                    HuffTree::Node(Box::new(rarest), rare),
+                    HuffTree::Branch(rare, Box::new(rarest)),
                 ),
             }
         }
@@ -43,7 +43,7 @@ impl<'a> HuffTree<'a> {
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
         words_occurrences
             .next()
-            .map(|rarest| helper(&mut words_occurrences, HuffTree::Leaf(rarest)))
+            .map(|rarest| helper(&mut words_occurrences, HuffTree::End(rarest)))
     }
 
     fn into_iter(&'a self) -> HuffTreeIter<'a> {
@@ -57,8 +57,8 @@ impl<'a> HuffTree<'a> {
     fn format_encodings(&self) -> String {
         // fn helper(next: String, encodings: &HuffTree) -> String {
         //     match encodings {
-        //         HuffTree::Leaf(word) => word.to_string() + "\t" + &next + "\n",
-        //         HuffTree::Node(rest, word) => {
+        //         HuffTree::End(word) => word.to_string() + "\t" + &next + "\n",
+        //         HuffTree::Branch(rest, word) => {
         //             word.to_string() + "\t" + &next + "0" + "\n" + &helper(next + "1", rest)
         //         }
         //     }
@@ -121,32 +121,37 @@ impl<'a> Iterator for HuffTreeIter<'a> {
             &mut HuffTreeIter::None => None,
             &mut HuffTreeIter::Some {
                 prefix_length,
-                tail,
-            } => match tail {
-                HuffTree::Leaf(word) => {
-                    *self = HuffTreeIter::None;
-                    Some((
-                        word,
-                        HuffCode {
-                            prefix_length: prefix_length,
-                            end: true,
+                tail: HuffTree::End(word),
+            } => {
+                *self = HuffTreeIter::None;
+                Some((
+                    word,
+                    HuffCode {
+                        prefix_length: if prefix_length == 0 {
+                            0
+                        } else {
+                            prefix_length - 1
                         },
-                    ))
-                }
-                HuffTree::Node(rest, word) => {
-                    *self = HuffTreeIter::Some {
-                        prefix_length: prefix_length + 1,
-                        tail: rest,
-                    };
-                    Some((
-                        word,
-                        HuffCode {
-                            prefix_length: prefix_length,
-                            end: false,
-                        },
-                    ))
-                }
-            },
+                        end: true,
+                    },
+                ))
+            }
+            &mut HuffTreeIter::Some {
+                prefix_length,
+                tail: HuffTree::Branch(word, rest),
+            } => {
+                *self = HuffTreeIter::Some {
+                    prefix_length: prefix_length + 1,
+                    tail: rest,
+                };
+                Some((
+                    word,
+                    HuffCode {
+                        prefix_length: prefix_length,
+                        end: false,
+                    },
+                ))
+            }
         }
     }
 }

@@ -45,15 +45,6 @@ impl<'a> HuffTree<'a> {
             .next()
             .map(|rarest| helper(&mut words_occurrences, HuffTree::Leaf(rarest)))
     }
-    fn fold<F, T>(&self, initial: T, f: F) -> T
-    where
-        F: Fn(&str, T) -> T,
-    {
-        match self {
-            HuffTree::Leaf(word) => f(word, initial),
-            HuffTree::Node(rest, word) => rest.fold(f(word, initial), f),
-        }
-    }
 
     /// format Hufftree to string with each word and corresponding encoding
     fn format_encodings(&self) -> String {
@@ -68,56 +59,6 @@ impl<'a> HuffTree<'a> {
         helper("".to_string(), self)
     }
 }
-
-// usize overflows
-// impl<'a> From<HuffTree<'a>> for Vec<(String, Vec<bool>)> {
-//     fn from(tree: HuffTree) -> Vec<(String, Vec<bool>)> {
-//         fn helper<'a>(
-//             next: Vec<bool>,
-//             encodings: HuffTree<'a>,
-//             vec: &'a mut Vec<(String, Vec<bool>)>,
-//         ) -> () {
-//             match encodings {
-//                 HuffTree::Leaf(word) => {
-//                     vec.push((word.to_string(), next));
-//                 }
-//                 HuffTree::Node(rest, word) => {
-//                     let prefix = next << 1;
-//                     vec.push((word.to_string(), prefix));
-//                     helper(prefix + 1, *rest, vec);
-//                 }
-//             }
-//         }
-//         let mut vec = Vec::new();
-//         helper(0, tree, &mut vec);
-//         vec
-//     }
-// }
-
-// #[derive(Debug, Clone)]
-// struct HuffTreeIter<'a> {
-//     inner: Option<&'a HuffTree<'a>>,
-// }
-// impl<'a> Iterator for HuffTreeIter<'a> {
-//     type Item = &'a str;
-//     fn next(&mut self) -> Option<&'a str> {
-//         match self.inner.as_ref()? {
-//             HuffTree::Leaf(word) => {
-//                 *self = HuffTreeIter { inner: None };
-//                 Some(word)
-//             }
-//             HuffTree::Node(rest, word) => {
-//                 *self = HuffTreeIter { inner: Some(rest) };
-//                 Some(word)
-//             }
-//         }
-//     }
-// }
-// impl<'a> HuffTree<'a> {
-//     fn into_iter(&'a self) -> HuffTreeIter<'a> {
-//         HuffTreeIter { inner: Some(&self) }
-//     }
-// }
 
 /// count occurrences of each word
 fn count_occurrences<'a, I>(words: &mut I) -> HashMap<&'a str, usize>

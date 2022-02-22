@@ -35,11 +35,11 @@ impl<'a> HuffTree<'a> {
                 ),
             }
         }
-        // sort by occurences, from more to less
+        // sort by occurences, from less to more
         let mut words_occurrences = count_occurrences(words)
             .into_iter()
             .collect::<Vec<(&str, usize)>>();
-        words_occurrences.sort_by(|(_, v0), (_, v1)| Ord::cmp(v1, v0));
+        words_occurrences.sort_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
         words_occurrences
             .next()

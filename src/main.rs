@@ -10,7 +10,7 @@ enum Error {
     NoInput,
 }
 
-// utilities
+// represent the Huffman encoding
 #[derive(Debug, Clone)]
 enum HuffTree<'a> {
     Leaf(&'a str),
@@ -46,17 +46,108 @@ impl<'a> HuffTree<'a> {
             .map(|rarest| helper(&mut words_occurrences, HuffTree::Leaf(rarest)))
     }
 
+    fn into_iter(&'a self) -> HuffTreeIter<'a> {
+        HuffTreeIter::Some {
+            prefix_length: 0,
+            tail: self,
+        }
+    }
+
     /// format Hufftree to string with each word and corresponding encoding
     fn format_encodings(&self) -> String {
-        fn helper(next: String, encodings: &HuffTree) -> String {
-            match encodings {
-                HuffTree::Leaf(word) => word.to_string() + "\t" + &next + "\n",
-                HuffTree::Node(rest, word) => {
-                    word.to_string() + "\t" + &next + "0" + "\n" + &helper(next + "1", rest)
-                }
-            }
+        // fn helper(next: String, encodings: &HuffTree) -> String {
+        //     match encodings {
+        //         HuffTree::Leaf(word) => word.to_string() + "\t" + &next + "\n",
+        //         HuffTree::Node(rest, word) => {
+        //             word.to_string() + "\t" + &next + "0" + "\n" + &helper(next + "1", rest)
+        //         }
+        //     }
+        // }
+        // helper(String::new(), self)
+        let mut result = String::new();
+        for (word, code) in self.into_iter() {
+            result = result + &format!("{}\t{}\n", word, code)
         }
-        helper("".to_string(), self)
+        result
+    }
+    /// encode words
+    fn encode_words<I>(&self, words: &mut I) -> Result<Vec<HuffCode>, usize>
+    where
+        I: Iterator<Item = &'a str>,
+    {
+        let dict = self.into_iter().collect::<HashMap<&str, HuffCode>>();
+        let mut result: Vec<HuffCode> = Vec::new();
+        for (i, word) in words.enumerate() {
+            result.push(dict.get(word).ok_or(i)?.clone());
+        }
+        Ok(result)
+    }
+
+    fn encode_string(&self, string: &str) -> Option<String> {
+        let mut result = String::new();
+        for code in self.encode_words(&mut string.split_whitespace()).ok()? {
+            result = result + &format!("{}", code);
+        }
+        Some(result)
+    }
+}
+#[derive(Clone, Debug)]
+struct HuffCode {
+    prefix_length: usize,
+    end: bool,
+}
+impl fmt::Display for HuffCode {
+    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+        for _ in 0..self.prefix_length {
+            write!(f, "1")?;
+        }
+        write!(f, "{}", if self.end { 1 } else { 0 })
+    }
+}
+
+#[derive(Debug)]
+enum HuffTreeIter<'a> {
+    None,
+    Some {
+        prefix_length: usize,
+        tail: &'a HuffTree<'a>,
+    },
+}
+
+impl<'a> Iterator for HuffTreeIter<'a> {
+    type Item = (&'a str, HuffCode);
+    fn next(&mut self) -> Option<(&'a str, HuffCode)> {
+        match self {
+            &mut HuffTreeIter::None => None,
+            &mut HuffTreeIter::Some {
+                prefix_length,
+                tail,
+            } => match tail {
+                HuffTree::Leaf(word) => {
+                    *self = HuffTreeIter::None;
+                    Some((
+                        word,
+                        HuffCode {
+                            prefix_length: prefix_length,
+                            end: true,
+                        },
+                    ))
+                }
+                HuffTree::Node(rest, word) => {
+                    *self = HuffTreeIter::Some {
+                        prefix_length: prefix_length + 1,
+                        tail: rest,
+                    };
+                    Some((
+                        word,
+                        HuffCode {
+                            prefix_length: prefix_length,
+                            end: false,
+                        },
+                    ))
+                }
+            },
+        }
     }
 }
 
@@ -87,6 +178,14 @@ fn main() -> Result<(), Error> {
 
     // print each word and corresponding encoding
     println!("{}", huffman_encoding.format_encodings());
+
+    // print encoded string
+    println!(
+        "{}",
+        huffman_encoding
+            .encode_string(&input)
+            .ok_or(Error::Unreachable)?
+    );
 
     return Ok(());
 }

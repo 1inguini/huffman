@@ -167,12 +167,41 @@ where
 }
 
 fn main() -> Result<(), Error> {
+    // options
+    use clap::{Parser, Subcommand};
+
+    #[derive(Parser)]
+    #[clap(author, version, about, long_about = None)]
+    struct Cli {
+        #[clap(subcommand)]
+        mode: Mode,
+    }
+    #[derive(Subcommand)]
+    enum Mode {
+        /// encodes words string
+        Encode,
+
+        /// encodes words string
+        Decode,
+    }
+    let args = Cli::parse();
+    match args.mode {
+        Mode::Decode => println!("Decoding is not implemented yet."),
+        Mode::Encode => (),
+    }
+
+    if atty::is(atty::Stream::Stdin) {
+        println!("Huffman only accepts string from stdin.");
+        return Err(Error::NoInput);
+    }
+
     // get words from stdin
     let mut input = String::new();
     io::stdin()
         .read_to_string(&mut input)
         .map_err(Error::IoError)?;
     let words = input.split_whitespace();
+
     // derive the huffman encodings of words as a tree
     let huffman_encoding: HuffTree = HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
 
@@ -184,7 +213,7 @@ fn main() -> Result<(), Error> {
     let mut encoded_string = String::new();
     huffman_encoding
         .encode_words(&mut words.clone())
-        .map_err(|_| Error::Unreachable("there shouldn't be words that has no encoding"))?
+        .map_err(|_| Error::Unreachable("there shouldn't be words that has no encodingXX"))?
         .into_iter()
         .for_each(|code| encoded_string.push_str(&format!("{}", code)));
     println!("{}", encoded_string);

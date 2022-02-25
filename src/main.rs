@@ -6,6 +6,7 @@ use std::*;
 #[derive(Debug)]
 enum Error {
     Unreachable(&'static str),
+    Unimplemented(&'static str),
     IoError(io::Error),
     NoInput,
 }
@@ -167,6 +168,12 @@ where
 }
 
 fn main() -> Result<(), Error> {
+    // abort when there is no input from stdin
+    if atty::is(atty::Stream::Stdin) {
+        println!("Huffman only accepts string from stdin.");
+        return Err(Error::NoInput);
+    }
+
     // options
     use clap::{Parser, Subcommand};
 
@@ -185,15 +192,6 @@ fn main() -> Result<(), Error> {
         Decode,
     }
     let args = Cli::parse();
-    match args.mode {
-        Mode::Decode => println!("Decoding is not implemented yet."),
-        Mode::Encode => (),
-    }
-
-    if atty::is(atty::Stream::Stdin) {
-        println!("Huffman only accepts string from stdin.");
-        return Err(Error::NoInput);
-    }
 
     // get words from stdin
     let mut input = String::new();
@@ -202,21 +200,25 @@ fn main() -> Result<(), Error> {
         .map_err(Error::IoError)?;
     let words = input.split_whitespace();
 
-    // derive the huffman encodings of words as a tree
-    let huffman_encoding: HuffTree = HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
-
-    // print each word and corresponding encoding
-    println!("{}", huffman_encoding.format_encodings());
-    println!("");
-
-    // print encoded string
-    let mut encoded_string = String::new();
-    huffman_encoding
-        .encode_words(&mut words.clone())
-        .map_err(|_| Error::Unreachable("there shouldn't be words that has no encodingXX"))?
-        .into_iter()
-        .for_each(|code| encoded_string.push_str(&format!("{}", code)));
-    println!("{}", encoded_string);
-
-    return Ok(());
+    // run each subcommands
+    return match args.mode {
+        Mode::Decode => Err(Error::Unimplemented("decoding")),
+        Mode::Encode => {
+            // derive the huffman encodings of words as a tree
+            let huffman_encoding: HuffTree =
+                HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
+            // print each word and corresponding encoding
+            println!("{}", huffman_encoding.format_encodings());
+            println!("");
+            // print encoded string
+            let mut encoded_string = String::new();
+            huffman_encoding
+                .encode_words(&mut words.clone())
+                .map_err(|_| Error::Unreachable("there shouldn't be words that has no encodingXX"))?
+                .into_iter()
+                .for_each(|code| encoded_string.push_str(&format!("{}", code)));
+            println!("{}", encoded_string);
+            Ok(())
+        }
+    };
 }

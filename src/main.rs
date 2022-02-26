@@ -1,6 +1,7 @@
 use std::cmp::Ord;
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{BufRead, BufWriter, Read, Write};
+use std::str::FromStr;
 use std::*;
 
 #[derive(Debug)]
@@ -9,7 +10,19 @@ enum Error {
     Unimplemented(&'static str),
     IoError(io::Error),
     NoInput,
+    InvalidEncodingDefinition {
+        linenum: usize,
+        line: String,
+        err: EncodingDefifnitionError,
+    },
 }
+#[derive(Debug)]
+enum EncodingDefifnitionError {
+    MisformattedDefinition,
+    DuplicateEncodings,
+    InvalidEncoding(ParseHuffCodeError),
+}
+use EncodingDefifnitionError::*;
 
 // represent the Huffman encoding
 #[derive(Debug, Clone)]
@@ -40,7 +53,7 @@ impl<'a> HuffTree<'a> {
         let mut words_occurrences = count_occurrences(words)
             .into_iter()
             .collect::<Vec<(&str, usize)>>();
-        words_occurrences.sort_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
+        words_occurrences.sort_unstable_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
         words_occurrences
             .next()
@@ -81,23 +94,50 @@ impl<'a> IntoIterator for &'a HuffTree<'a> {
     type IntoIter = HuffTreeIter<'a>;
     fn into_iter(self) -> HuffTreeIter<'a> {
         HuffTreeIter::Some {
-            prefix_length: 0,
+            init_length: 0,
             tail: self,
         }
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct HuffCode {
-    prefix_length: usize,
-    end: bool,
+    init_length: usize,
+    last: bool,
 }
 impl fmt::Display for HuffCode {
     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        for _ in 0..self.prefix_length {
+        for _ in 0..self.init_length {
             write!(f, "1")?;
         }
-        write!(f, "{}", if self.end { 1 } else { 0 })
+        write!(f, "{}", if self.last { 1 } else { 0 })
+    }
+}
+#[derive(Debug)]
+enum ParseHuffCodeError {
+    Empty,
+    NonBinary,
+    InvalidBinary,
+}
+impl str::FromStr for HuffCode {
+    type Err = ParseHuffCodeError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use ParseHuffCodeError::*;
+        let s = s.as_bytes();
+        if !s.into_iter().all(|byte| *byte == b'0' || *byte == b'1') {
+            return Err(NonBinary);
+        }
+        return match s.split_last() {
+            None => Err(Empty),
+            Some((last, init)) => Ok(HuffCode {
+                init_length: if init.into_iter().all(|b| *b == b'1') {
+                    init.len()
+                } else {
+                    return Err(InvalidBinary);
+                },
+                last: *last == b'1',
+            }),
+        };
     }
 }
 
@@ -105,7 +145,7 @@ impl fmt::Display for HuffCode {
 enum HuffTreeIter<'a> {
     None,
     Some {
-        prefix_length: usize,
+        init_length: usize,
         tail: &'a HuffTree<'a>,
     },
 }
@@ -116,35 +156,31 @@ impl<'a> Iterator for HuffTreeIter<'a> {
         match self {
             &mut HuffTreeIter::None => None,
             &mut HuffTreeIter::Some {
-                prefix_length,
+                init_length,
                 tail: HuffTree::End(word),
             } => {
                 *self = HuffTreeIter::None;
                 Some((
                     word,
                     HuffCode {
-                        prefix_length: if prefix_length == 0 {
-                            0
-                        } else {
-                            prefix_length - 1
-                        },
-                        end: true,
+                        init_length: if init_length == 0 { 0 } else { init_length - 1 },
+                        last: true,
                     },
                 ))
             }
             &mut HuffTreeIter::Some {
-                prefix_length,
+                init_length,
                 tail: HuffTree::Branch(word, rest),
             } => {
                 *self = HuffTreeIter::Some {
-                    prefix_length: prefix_length + 1,
+                    init_length: init_length + 1,
                     tail: rest,
                 };
                 Some((
                     word,
                     HuffCode {
-                        prefix_length: prefix_length,
-                        end: false,
+                        init_length: init_length,
+                        last: false,
                     },
                 ))
             }
@@ -167,43 +203,129 @@ where
     words_occurrences
 }
 
+// options
+use clap::{Parser, Subcommand};
+
+/// represent all acceptable arguments
+#[derive(Parser)]
+#[clap(author, version, about, long_about = None)]
+struct Args {
+    #[clap(subcommand)]
+    mode: Mode,
+}
+#[derive(Subcommand)]
+enum Mode {
+    /// encodes words string
+    Encode,
+
+    /// decodes words string
+    Decode,
+}
+
 fn main() -> Result<(), Error> {
+    // prepare stdout with buffering
+    let stdout = io::stdout();
+    let mut stdout = BufWriter::new(stdout.lock());
+    macro_rules! println {
+        ($($arg:tt)*) => ({
+            $crate::writeln!(stdout, $($arg)*).map_err(Error::IoError)?;
+        })
+    }
     // abort when there is no input from stdin
     if atty::is(atty::Stream::Stdin) {
         println!("Huffman only accepts string from stdin.");
         return Err(Error::NoInput);
     }
 
-    // options
-    use clap::{Parser, Subcommand};
-
-    #[derive(Parser)]
-    #[clap(author, version, about, long_about = None)]
-    struct Cli {
-        #[clap(subcommand)]
-        mode: Mode,
-    }
-    #[derive(Subcommand)]
-    enum Mode {
-        /// encodes words string
-        Encode,
-
-        /// encodes words string
-        Decode,
-    }
-    let args = Cli::parse();
-
-    // get words from stdin
-    let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(Error::IoError)?;
-    let words = input.split_whitespace();
+    // get arguments
+    let args = Args::parse();
 
     // run each subcommands
     return match args.mode {
-        Mode::Decode => Err(Error::Unimplemented("decoding")),
+        Mode::Decode => {
+            // get lines from stdin, one line at a time
+            let stdin = io::stdin();
+            let stdin = stdin.lock();
+            let mut lines = stdin.lines().enumerate();
+
+            // skip newlines before encoding definitions
+            let mut trailing = false;
+
+            // record encodings
+            let mut dict: Vec<(usize, HuffCode, String)> = Vec::new();
+            for (linenum, line) in &mut lines {
+                let line = line.map_err(Error::IoError)?;
+                // encoding definition part starts after and ends before empty line
+                if line == "" {
+                    if trailing {
+                        break;
+                    } else {
+                        continue;
+                    }
+                } else {
+                    trailing = true
+                };
+
+                // each encoding definition is tab seperated pair of word and encoding
+                match line.split_once('\t') {
+                    None => {
+                        return Err(Error::InvalidEncodingDefinition {
+                            linenum: linenum,
+                            line: line,
+                            err: MisformattedDefinition,
+                        });
+                    }
+                    Some((word, encoding)) => {
+                        let _ = dict.push((
+                            linenum,
+                            (HuffCode::from_str(encoding).map_err(|err| {
+                                Error::InvalidEncodingDefinition {
+                                    linenum: linenum,
+                                    line: line.clone(),
+                                    err: InvalidEncoding(err),
+                                }
+                            }))?,
+                            word.to_string(),
+                        ));
+                    }
+                }
+            }
+            // convert Hashmap to HuffTree
+            dict.sort_unstable_by(|(_, code0, _), (_, code1, _)| Ord::cmp(code0, code1));
+            let mut dict = dict.into_iter();
+            let hufftree: HuffTree = match dict.next() {
+                None => {
+                    return Err(Error::NoInput);
+                }
+                Some((
+                    _,
+                    HuffCode {
+                        init_length: 0,
+                        last: false,
+                    },
+                    word,
+                )) => HuffTree::End(word.to_string()),
+            };
+            for (linenum, encoding, word) in dict {}
+
+            for (linenum, line) in &mut lines {
+                let line = line.map_err(Error::IoError)?;
+                println!("{}", line);
+                if line == "" {
+                    println!("\nempty line!\n");
+                };
+            }
+            Err(Error::Unimplemented("decoding"))
+        }
         Mode::Encode => {
+            // get words from stdin, waits until EOF
+            let mut input = String::new();
+            io::stdin()
+                .lock()
+                .read_to_string(&mut input)
+                .map_err(Error::IoError)?;
+            let input = input;
+            let words = input.split_whitespace();
             // derive the huffman encodings of words as a tree
             let huffman_encoding: HuffTree =
                 HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
@@ -211,12 +333,17 @@ fn main() -> Result<(), Error> {
             println!("{}", huffman_encoding.format_encodings());
             println!("");
             // print encoded string
-            let mut encoded_string = String::new();
-            huffman_encoding
-                .encode_words(&mut words.clone())
-                .map_err(|_| Error::Unreachable("there shouldn't be words that has no encodingXX"))?
-                .into_iter()
-                .for_each(|code| encoded_string.push_str(&format!("{}", code)));
+            let encoded_string = {
+                let mut encoded_string = String::new();
+                huffman_encoding
+                    .encode_words(&mut words.clone())
+                    .map_err(|_| {
+                        Error::Unreachable("there shouldn't be words that has no encodingXX")
+                    })?
+                    .into_iter()
+                    .for_each(|code| encoded_string.push_str(&format!("{}", code)));
+                encoded_string
+            };
             println!("{}", encoded_string);
             Ok(())
         }

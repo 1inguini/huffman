@@ -20,6 +20,7 @@ enum Error {
 enum EncodingDefifnitionError {
     MisformattedDefinition,
     DuplicateEncodings,
+    InsufficientDefinition,
     InvalidEncoding(ParseHuffCodeError),
 }
 use EncodingDefifnitionError::*;
@@ -274,23 +275,47 @@ fn main() -> Result<(), Error> {
                     }
                 }
             }
-            // convert Hashmap to HuffTree
+            // validate and convert Hashmap to HuffTree
             dict.sort_unstable_by(|(_, code0, _), (_, code1, _)| Ord::cmp(code0, code1));
             let mut dict = dict.into_iter();
-            // let hufftree: Encodings = match dict.next() {
-            //     None => {
-            //         return Err(Error::NoInput);
-            //     }
-            //     Some((
-            //         _,
-            //         HuffCode {
-            //             init_length: 0,
-            //             last: false,
-            //         },
-            //         word,
-            //     )) => HuffTree::End(word.to_string()),
-            // };
-            for (linenum, encoding, word) in dict {}
+
+            let mut expected: HuffCode = HuffCode {
+                init_length: 0,
+                last: false,
+            };
+            let mut hufftree: Encodings = match dict.next() {
+                None => {
+                    return Err(Error::NoInput);
+                }
+                Some((linenum, encoding, word)) => {
+                    if encoding == expected {
+                        Encodings {
+                            common: Vec::new(),
+                            rarest: word,
+                        }
+                    } else {
+                        return Err(Error::InvalidEncodingDefinition {
+                            linenum: linenum,
+                            line: format!("{}\t{}", word, encoding),
+                            err: InsufficientDefinition,
+                        });
+                    }
+                }
+            };
+            for (linenum, encoding, word) in dict {
+                expected.init_length += if encoding.last { 0 } else { 1 };
+                expected.last = encoding.last;
+                if encoding == expected {
+                    hufftree.common.push(hufftree.rarest);
+                    hufftree.rarest = word;
+                } else {
+                    return Err(Error::InvalidEncodingDefinition {
+                        linenum: linenum,
+                        line: format!("{}\t{}", word, encoding),
+                        err: InsufficientDefinition,
+                    });
+                }
+            }
 
             for (linenum, line) in &mut lines {
                 let line = line.map_err(Error::IoError)?;

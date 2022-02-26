@@ -15,6 +15,11 @@ enum Error {
         line: String,
         err: EncodingDefifnitionError,
     },
+    InvalidCodeString {
+        linenum: usize,
+        position: usize,
+        err: CodeStringError,
+    },
 }
 #[derive(Debug)]
 enum EncodingDefifnitionError {
@@ -24,6 +29,13 @@ enum EncodingDefifnitionError {
     InvalidEncoding(ParseHuffCodeError),
 }
 use EncodingDefifnitionError::*;
+
+#[derive(Debug)]
+enum CodeStringError {
+    NonBinary,
+    MalformedBinary,
+}
+use CodeStringError::*;
 
 // represent the Huffman encoding
 #[derive(Debug, Clone)]
@@ -283,7 +295,7 @@ fn main() -> Result<(), Error> {
                 init_length: 0,
                 last: false,
             };
-            let mut hufftree: Encodings = match dict.next() {
+            let mut encodings: Encodings = match dict.next() {
                 None => {
                     return Err(Error::NoInput);
                 }
@@ -306,8 +318,8 @@ fn main() -> Result<(), Error> {
                 expected.init_length += if encoding.last { 0 } else { 1 };
                 expected.last = encoding.last;
                 if encoding == expected {
-                    hufftree.common.push(hufftree.rarest);
-                    hufftree.rarest = word;
+                    encodings.common.push(encodings.rarest);
+                    encodings.rarest = word;
                 } else {
                     return Err(Error::InvalidEncodingDefinition {
                         linenum: linenum,
@@ -319,10 +331,38 @@ fn main() -> Result<(), Error> {
 
             for (linenum, line) in &mut lines {
                 let line = line.map_err(Error::IoError)?;
-                println!("{}", line);
                 if line == "" {
-                    println!("\nempty line!\n");
+                    continue;
                 };
+                let mut decoded: String = String::new();
+                let mut ones: usize = 0;
+                for (pos, &byte) in line.as_bytes().into_iter().enumerate() {
+                    if encodings.common.len() <= ones {
+                        decoded.push_str(&encodings.rarest);
+                        decoded.push_str("\n");
+                        ones = 0;
+                    } else {
+                        match byte {
+                            b'1' => ones += 1,
+                            b'0' => {
+                                decoded
+                                    .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
+                                    "ones should have been resetted before it gets out of bounds",
+                                ))?);
+                                decoded.push_str("\n");
+                                ones = 0;
+                            }
+                            _ => {
+                                return Err(Error::InvalidCodeString {
+                                    linenum: linenum,
+                                    position: pos,
+                                    err: NonBinary,
+                                });
+                            }
+                        }
+                    }
+                }
+                println!("{}", decoded);
             }
             Err(Error::Unimplemented("decoding"))
         }

@@ -25,34 +25,31 @@ enum EncodingDefifnitionError {
 use EncodingDefifnitionError::*;
 
 // represent the Huffman encoding
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum HuffTree<'a> {
-    End(&'a str),
-    Branch(&'a str, Box<HuffTree<'a>>),
+    End(String),
+    Branch(String, &'a HuffTree<'a>),
 }
 
 impl<'a> HuffTree<'a> {
     /// Create a new HuffTree, with the given Iterator of words
-    fn new<I>(words: &mut I) -> Option<HuffTree<'a>>
+    fn new<I>(words: &mut I) -> Option<HuffTree>
     where
-        I: Iterator<Item = &'a str>,
+        I: Iterator<Item = String>,
     {
         fn helper<'a, I>(words_sorted_by_occurences: &mut I, rarest: HuffTree<'a>) -> HuffTree<'a>
         where
-            I: Iterator<Item = &'a str>,
+            I: Iterator<Item = String>,
         {
             match words_sorted_by_occurences.next() {
                 None => rarest,
-                Some(rare) => helper(
-                    words_sorted_by_occurences,
-                    HuffTree::Branch(rare, Box::new(rarest)),
-                ),
+                Some(rare) => helper(words_sorted_by_occurences, HuffTree::Branch(rare, &rarest)),
             }
         }
         // sort by occurences, from less to more
         let mut words_occurrences = count_occurrences(words)
             .into_iter()
-            .collect::<Vec<(&str, usize)>>();
+            .collect::<Vec<(String, usize)>>();
         words_occurrences.sort_unstable_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
         words_occurrences
@@ -63,7 +60,7 @@ impl<'a> HuffTree<'a> {
     /// format Hufftree to string with each word and corresponding encoding
     /// Each word-encoding relation is newwline seperated,
     /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
-    fn format_encodings(&self) -> String {
+    fn format_encodings(&'a self) -> String {
         let mut result = String::new();
         let mut line_sep = false;
         for (word, code) in self.into_iter() {
@@ -78,19 +75,19 @@ impl<'a> HuffTree<'a> {
     /// encode words
     fn encode_words<I>(&self, words: &mut I) -> Result<Vec<HuffCode>, usize>
     where
-        I: Iterator<Item = &'a str>,
+        I: Iterator<Item = String>,
     {
-        let dict = self.into_iter().collect::<HashMap<&str, HuffCode>>();
+        let dict = self.into_iter().collect::<HashMap<String, HuffCode>>();
         let mut result: Vec<HuffCode> = Vec::new();
         for (i, word) in words.enumerate() {
-            result.push(dict.get(word).ok_or(i)?.clone());
+            result.push(dict.get(&word).ok_or(i)?.clone());
         }
         Ok(result)
     }
 }
 
-impl<'a> IntoIterator for &'a HuffTree<'a> {
-    type Item = (&'a str, HuffCode);
+impl<'a> IntoIterator for HuffTree<'a> {
+    type Item = (String, HuffCode);
     type IntoIter = HuffTreeIter<'a>;
     fn into_iter(self) -> HuffTreeIter<'a> {
         HuffTreeIter::Some {
@@ -146,18 +143,18 @@ enum HuffTreeIter<'a> {
     None,
     Some {
         init_length: usize,
-        tail: &'a HuffTree<'a>,
+        tail: HuffTree<'a>,
     },
 }
 
 impl<'a> Iterator for HuffTreeIter<'a> {
-    type Item = (&'a str, HuffCode);
-    fn next(&mut self) -> Option<(&'a str, HuffCode)> {
-        match self {
+    type Item = (String, HuffCode);
+    fn next(&mut self) -> Option<(String, HuffCode)> {
+        match &mut self {
             &mut HuffTreeIter::None => None,
             &mut HuffTreeIter::Some {
-                init_length,
-                tail: HuffTree::End(word),
+                mut init_length,
+                tail: HuffTree::End(mut word),
             } => {
                 *self = HuffTreeIter::None;
                 Some((
@@ -169,12 +166,12 @@ impl<'a> Iterator for HuffTreeIter<'a> {
                 ))
             }
             &mut HuffTreeIter::Some {
-                init_length,
-                tail: HuffTree::Branch(word, rest),
+                mut init_length,
+                tail: HuffTree::Branch(mut word, rest),
             } => {
                 *self = HuffTreeIter::Some {
                     init_length: init_length + 1,
-                    tail: rest,
+                    tail: { rest },
                 };
                 Some((
                     word,
@@ -189,11 +186,11 @@ impl<'a> Iterator for HuffTreeIter<'a> {
 }
 
 /// count occurrences of each word
-fn count_occurrences<'a, I>(words: &mut I) -> HashMap<&'a str, usize>
+fn count_occurrences<I>(words: &mut I) -> HashMap<String, usize>
 where
-    I: Iterator<Item = &'a str>,
+    I: Iterator<Item = String>,
 {
-    let mut words_occurrences: HashMap<&str, usize> = HashMap::new();
+    let mut words_occurrences: HashMap<String, usize> = HashMap::new();
     for word in words {
         match &words_occurrences.get(&word) {
             None => words_occurrences.insert(word, 0),
@@ -324,8 +321,7 @@ fn main() -> Result<(), Error> {
                 .lock()
                 .read_to_string(&mut input)
                 .map_err(Error::IoError)?;
-            let input = input;
-            let words = input.split_whitespace();
+            let words = input.split_whitespace().map(str::to_string);
             // derive the huffman encodings of words as a tree
             let huffman_encoding: HuffTree =
                 HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;

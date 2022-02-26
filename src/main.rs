@@ -287,7 +287,7 @@ fn main() -> Result<(), Error> {
                     }
                 }
             }
-            // validate and convert Hashmap to HuffTree
+            // validate and convert Hashmap to Encodings
             dict.sort_unstable_by(|(_, code0, _), (_, code1, _)| Ord::cmp(code0, code1));
             let mut dict = dict.into_iter();
 
@@ -329,6 +329,7 @@ fn main() -> Result<(), Error> {
                 }
             }
 
+            // decode string
             for (linenum, line) in &mut lines {
                 let line = line.map_err(Error::IoError)?;
                 if line == "" {
@@ -362,9 +363,18 @@ fn main() -> Result<(), Error> {
                         }
                     }
                 }
+
+                // check trailing bits
+                if 0 < ones {
+                    return Err(Error::InvalidCodeString {
+                        linenum: linenum,
+                        position: line.as_bytes().len() - ones,
+                        err: MalformedBinary,
+                    });
+                }
                 println!("{}", decoded);
             }
-            Err(Error::Unimplemented("decoding"))
+            Ok(())
         }
         Mode::Encode => {
             // get words from stdin, waits until EOF

@@ -25,42 +25,36 @@ enum EncodingDefifnitionError {
 use EncodingDefifnitionError::*;
 
 // represent the Huffman encoding
-#[derive(Debug)]
-enum HuffTree<'a> {
-    End(String),
-    Branch(String, &'a HuffTree<'a>),
+#[derive(Debug, Clone)]
+struct Encodings {
+    /// words with encoding prefixed with index-of-vector replication of 1s and ends in 0
+    common: Vec<String>,
+    /// word with encoding of only 1s
+    rarest: String,
 }
 
-impl<'a> HuffTree<'a> {
+impl Encodings {
     /// Create a new HuffTree, with the given Iterator of words
-    fn new<I>(words: &mut I) -> Option<HuffTree>
+    fn new<I>(words: &mut I) -> Option<Self>
     where
         I: Iterator<Item = String>,
     {
-        fn helper<'a, I>(words_sorted_by_occurences: &mut I, rarest: HuffTree<'a>) -> HuffTree<'a>
-        where
-            I: Iterator<Item = String>,
-        {
-            match words_sorted_by_occurences.next() {
-                None => rarest,
-                Some(rare) => helper(words_sorted_by_occurences, HuffTree::Branch(rare, &rarest)),
-            }
-        }
         // sort by occurences, from less to more
         let mut words_occurrences = count_occurrences(words)
             .into_iter()
             .collect::<Vec<(String, usize)>>();
         words_occurrences.sort_unstable_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
-        words_occurrences
-            .next()
-            .map(|rarest| helper(&mut words_occurrences, HuffTree::End(rarest)))
+        words_occurrences.next_back().map(|rarest| Encodings {
+            common: words_occurrences.collect(),
+            rarest: rarest,
+        })
     }
 
     /// format Hufftree to string with each word and corresponding encoding
     /// Each word-encoding relation is newwline seperated,
     /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
-    fn format_encodings(&'a self) -> String {
+    fn format_encodings(self) -> String {
         let mut result = String::new();
         let mut line_sep = false;
         for (word, code) in self.into_iter() {
@@ -73,7 +67,7 @@ impl<'a> HuffTree<'a> {
         result
     }
     /// encode words
-    fn encode_words<I>(&self, words: &mut I) -> Result<Vec<HuffCode>, usize>
+    fn encode_words<I>(self, words: &mut I) -> Result<Vec<HuffCode>, usize>
     where
         I: Iterator<Item = String>,
     {
@@ -85,15 +79,55 @@ impl<'a> HuffTree<'a> {
         Ok(result)
     }
 }
-
-impl<'a> IntoIterator for HuffTree<'a> {
-    type Item = (String, HuffCode);
-    type IntoIter = HuffTreeIter<'a>;
-    fn into_iter(self) -> HuffTreeIter<'a> {
-        HuffTreeIter::Some {
-            init_length: 0,
-            tail: self,
+impl Default for Encodings {
+    fn default() -> Self {
+        Encodings {
+            common: Vec::new(),
+            rarest: String::new(),
         }
+    }
+}
+
+#[derive(Debug)]
+struct EncodingsIterator {
+    index: usize,
+    inner: Encodings,
+}
+impl IntoIterator for Encodings {
+    type Item = (String, HuffCode);
+    type IntoIter = EncodingsIterator;
+    fn into_iter(self) -> Self::IntoIter {
+        EncodingsIterator {
+            index: 0,
+            inner: self,
+        }
+    }
+}
+impl Iterator for EncodingsIterator {
+    type Item = (String, HuffCode);
+    fn next(&mut self) -> Option<Self::Item> {
+        let result = if self.index == self.inner.common.len() {
+            Some((
+                mem::take(&mut self.inner.rarest),
+                HuffCode {
+                    init_length: if self.index < 1 { 0 } else { self.index - 1 },
+                    last: true,
+                },
+            ))
+        } else {
+            match self.inner.common.get(self.index) {
+                None => None,
+                Some(word) => Some((
+                    word.clone(),
+                    HuffCode {
+                        init_length: self.index,
+                        last: false,
+                    },
+                )),
+            }
+        };
+        self.index += 1;
+        result
     }
 }
 
@@ -135,53 +169,6 @@ impl str::FromStr for HuffCode {
                 last: *last == b'1',
             }),
         };
-    }
-}
-
-#[derive(Debug)]
-enum HuffTreeIter<'a> {
-    None,
-    Some {
-        init_length: usize,
-        tail: HuffTree<'a>,
-    },
-}
-
-impl<'a> Iterator for HuffTreeIter<'a> {
-    type Item = (String, HuffCode);
-    fn next(&mut self) -> Option<(String, HuffCode)> {
-        match &mut self {
-            &mut HuffTreeIter::None => None,
-            &mut HuffTreeIter::Some {
-                mut init_length,
-                tail: HuffTree::End(mut word),
-            } => {
-                *self = HuffTreeIter::None;
-                Some((
-                    word,
-                    HuffCode {
-                        init_length: if init_length == 0 { 0 } else { init_length - 1 },
-                        last: true,
-                    },
-                ))
-            }
-            &mut HuffTreeIter::Some {
-                mut init_length,
-                tail: HuffTree::Branch(mut word, rest),
-            } => {
-                *self = HuffTreeIter::Some {
-                    init_length: init_length + 1,
-                    tail: { rest },
-                };
-                Some((
-                    word,
-                    HuffCode {
-                        init_length: init_length,
-                        last: false,
-                    },
-                ))
-            }
-        }
     }
 }
 
@@ -290,19 +277,19 @@ fn main() -> Result<(), Error> {
             // convert Hashmap to HuffTree
             dict.sort_unstable_by(|(_, code0, _), (_, code1, _)| Ord::cmp(code0, code1));
             let mut dict = dict.into_iter();
-            let hufftree: HuffTree = match dict.next() {
-                None => {
-                    return Err(Error::NoInput);
-                }
-                Some((
-                    _,
-                    HuffCode {
-                        init_length: 0,
-                        last: false,
-                    },
-                    word,
-                )) => HuffTree::End(word.to_string()),
-            };
+            // let hufftree: Encodings = match dict.next() {
+            //     None => {
+            //         return Err(Error::NoInput);
+            //     }
+            //     Some((
+            //         _,
+            //         HuffCode {
+            //             init_length: 0,
+            //             last: false,
+            //         },
+            //         word,
+            //     )) => HuffTree::End(word.to_string()),
+            // };
             for (linenum, encoding, word) in dict {}
 
             for (linenum, line) in &mut lines {
@@ -323,15 +310,15 @@ fn main() -> Result<(), Error> {
                 .map_err(Error::IoError)?;
             let words = input.split_whitespace().map(str::to_string);
             // derive the huffman encodings of words as a tree
-            let huffman_encoding: HuffTree =
-                HuffTree::new(&mut words.clone()).ok_or(Error::NoInput)?;
+            let huffman_encodings: Encodings =
+                Encodings::new(&mut words.clone()).ok_or(Error::NoInput)?;
             // print each word and corresponding encoding
-            println!("{}", huffman_encoding.format_encodings());
+            println!("{}", huffman_encodings.clone().format_encodings());
             println!("");
             // print encoded string
             let encoded_string = {
                 let mut encoded_string = String::new();
-                huffman_encoding
+                huffman_encodings
                     .encode_words(&mut words.clone())
                     .map_err(|_| {
                         Error::Unreachable("there shouldn't be words that has no encodingXX")

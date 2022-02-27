@@ -35,6 +35,9 @@ enum EncodingDefifnitionError {
     /// definition is not in "word TAB encoding" style
     MisformattedDefinition,
 
+    /// same word has been associated with another word
+    DuplicateDefinitions,
+
     /// same code has been associated with another word
     DuplicateEncodings,
 
@@ -290,7 +293,16 @@ fn main() -> Result<(), Error> {
                         }));
                     }
                     Some((word, encoding)) => {
-                        let _ = dict.push((
+                        let word = word.to_string();
+                        // check for duplicate word
+                        if dict.iter().any(|(_, _, w)| w == &word) {
+                            return Err(Error::InvalidEncodingDefinition(IsAt {
+                                line: linenum,
+                                character: 0,
+                                is: DuplicateDefinitions,
+                            }));
+                        }
+                        dict.push((
                             linenum,
                             (HuffCode::from_str(encoding).map_err(|err| {
                                 Error::InvalidEncodingDefinition(IsAt {
@@ -299,8 +311,8 @@ fn main() -> Result<(), Error> {
                                     is: InvalidEncoding(err),
                                 })
                             }))?,
-                            word.to_string(),
-                        ));
+                            word,
+                        ))
                     }
                 }
             }

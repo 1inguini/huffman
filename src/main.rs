@@ -1,41 +1,75 @@
 use std::cmp::Ord;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io::{BufRead, BufWriter, Read, Write};
 use std::str::FromStr;
 use std::*;
 
-#[derive(Debug)]
-enum Error {
-    Unreachable(&'static str),
-    Unimplemented(&'static str),
-    IoError(io::Error),
-    NoInput,
-    InvalidEncodingDefinition {
-        linenum: usize,
-        line: String,
-        err: EncodingDefifnitionError,
-    },
-    InvalidCodeString {
-        linenum: usize,
-        position: usize,
-        err: CodeStringError,
-    },
-}
-#[derive(Debug)]
-enum EncodingDefifnitionError {
-    MisformattedDefinition,
-    DuplicateEncodings,
-    InsufficientDefinition,
-    InvalidEncoding(ParseHuffCodeError),
-}
-use EncodingDefifnitionError::*;
+mod error {
+    use std::io;
 
-#[derive(Debug)]
-enum CodeStringError {
-    NonBinary,
-    MalformedBinary,
+    pub trait Error {
+        fn because_of(self) -> BecauseOf;
+    }
+
+    impl Error for BecauseOf {
+        fn because_of(self) -> BecauseOf {
+            self
+        }
+    }
+    #[derive(Debug)]
+    pub enum BecauseOf {
+        Unreachable(&'static str),
+        IoError(io::Error),
+        NoInput,
+        InvalidInput(in_input::BecauseOfAt),
+    }
+    impl Error for in_input::BecauseOfAt {
+        fn because_of(self) -> BecauseOf {
+            BecauseOf::InvalidInput(self)
+        }
+    }
+    pub mod in_input {
+        #[derive(Debug)]
+        pub struct BecauseOfAt {
+            line: usize,
+            character: usize,
+            because_of: BecauseOf,
+        }
+        #[derive(Debug)]
+        pub enum BecauseOf {
+            InvalidEncodingDefifnition(in_encoding_definition::BecauseOf),
+            InvalidCodeString(in_code::BecauseOf),
+        }
+        pub trait Error {
+            fn because_of(self) -> BecauseOf;
+        }
+
+        impl Error for in_encoding_definition::BecauseOf {
+            fn because_of(self) -> BecauseOf {
+                BecauseOf::InvalidEncodingDefifnition(self)
+            }
+        }
+        pub mod in_encoding_definition {
+            #[derive(Debug)]
+            pub enum BecauseOf {
+                MisformattedDefinition,
+                DuplicateDefinition,
+                InsufficientDefinition,
+                InvalidCode(super::in_code::BecauseOf),
+            }
+        }
+
+        pub mod in_code {
+            #[derive(Debug)]
+            pub enum BecauseOf {
+                Empty,
+                NonBinary,
+                InvalidBinary,
+            }
+        }
+    }
 }
-use CodeStringError::*;
 
 // represent the Huffman encoding
 #[derive(Debug, Clone)]
@@ -157,16 +191,10 @@ impl fmt::Display for HuffCode {
         write!(f, "{}", if self.last { 1 } else { 0 })
     }
 }
-#[derive(Debug)]
-enum ParseHuffCodeError {
-    Empty,
-    NonBinary,
-    InvalidBinary,
-}
 impl str::FromStr for HuffCode {
-    type Err = ParseHuffCodeError;
+    type Err = error::in_input::in_code::BecauseOf;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        use ParseHuffCodeError::*;
+        use error::in_input::in_code::BecauseOf::*;
         let s = s.as_bytes();
         if !s.into_iter().all(|byte| *byte == b'0' || *byte == b'1') {
             return Err(NonBinary);
@@ -219,19 +247,24 @@ enum Mode {
     Decode,
 }
 
-fn main() -> Result<(), Error> {
+fn main() {
+    if let Err(err) = cli() {
+        println!("{:?}", err.because_of())
+    };
+}
+fn cli() -> Result<(), error::BecauseOf> {
     // prepare stdout with buffering
     let stdout = io::stdout();
     let mut stdout = BufWriter::new(stdout.lock());
     macro_rules! println {
         ($($arg:tt)*) => ({
-            $crate::writeln!(stdout, $($arg)*).map_err(Error::IoError)?;
+            $crate::writeln!(stdout, $($arg)*).map_err(error::BecauseOf::IoError)?;
         })
     }
     // abort when there is no input from stdin
     if atty::is(atty::Stream::Stdin) {
         println!("Huffman only accepts string from stdin.");
-        return Err(Error::NoInput);
+        return Err(error::BecauseOf::NoInput);
     }
 
     // get arguments
@@ -251,7 +284,7 @@ fn main() -> Result<(), Error> {
             // record encodings
             let mut dict: Vec<(usize, HuffCode, String)> = Vec::new();
             for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::IoError)?;
+                let line = line.map_err(error::BecauseOf::IoError)?;
                 // encoding definition part starts after and ends before empty line
                 if line == "" {
                     if trailing {
@@ -266,11 +299,13 @@ fn main() -> Result<(), Error> {
                 // each encoding definition is tab seperated pair of word and encoding
                 match line.split_once('\t') {
                     None => {
-                        return Err(Error::InvalidEncodingDefinition {
-                            linenum: linenum,
-                            line: line,
-                            err: MisformattedDefinition,
-                        });
+                        use error::in_input::Error;
+                        use error::Error;
+                        return Err(error::in_input::BecauseOfAt {
+                            line: linenum,
+                            character: 0,
+                            because_of: error::in_input::in_encoding_definition::BecauseOf::MisformattedDefinition.because_of(),
+                        }.because_of());
                     }
                     Some((word, encoding)) => {
                         let _ = dict.push((
@@ -279,7 +314,7 @@ fn main() -> Result<(), Error> {
                                 Error::InvalidEncodingDefinition {
                                     linenum: linenum,
                                     line: line.clone(),
-                                    err: InvalidEncoding(err),
+                                    err: error::InvalidEncoding(err),
                                 }
                             }))?,
                             word.to_string(),
@@ -309,7 +344,7 @@ fn main() -> Result<(), Error> {
                         return Err(Error::InvalidEncodingDefinition {
                             linenum: linenum,
                             line: format!("{}\t{}", word, encoding),
-                            err: InsufficientDefinition,
+                            err: error::InsufficientDefinition,
                         });
                     }
                 }
@@ -324,7 +359,7 @@ fn main() -> Result<(), Error> {
                     return Err(Error::InvalidEncodingDefinition {
                         linenum: linenum,
                         line: format!("{}\t{}", word, encoding),
-                        err: InsufficientDefinition,
+                        err: error::InsufficientDefinition,
                     });
                 }
             }
@@ -357,7 +392,7 @@ fn main() -> Result<(), Error> {
                                 return Err(Error::InvalidCodeString {
                                     linenum: linenum,
                                     position: pos,
-                                    err: NonBinary,
+                                    err: error::NonBinary,
                                 });
                             }
                         }

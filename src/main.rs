@@ -7,20 +7,18 @@ use std::*;
 #[derive(Debug)]
 enum Error {
     Unreachable(&'static str),
-    Unimplemented(&'static str),
     IoError(io::Error),
     NoInput,
-    InvalidEncodingDefinition {
-        linenum: usize,
-        line: String,
-        err: EncodingDefifnitionError,
-    },
-    InvalidCodeString {
-        linenum: usize,
-        position: usize,
-        err: CodeStringError,
-    },
+    InvalidEncodingDefinition(ErrorAt<EncodingDefifnitionError>),
+    InvalidCodeString(ErrorAt<CodeStringError>),
 }
+#[derive(Debug)]
+struct ErrorAt<E> {
+    line: usize,
+    character: usize,
+    err: E,
+}
+
 #[derive(Debug)]
 enum EncodingDefifnitionError {
     MisformattedDefinition,
@@ -266,21 +264,21 @@ fn main() -> Result<(), Error> {
                 // each encoding definition is tab seperated pair of word and encoding
                 match line.split_once('\t') {
                     None => {
-                        return Err(Error::InvalidEncodingDefinition {
-                            linenum: linenum,
-                            line: line,
+                        return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                            line: linenum,
+                            character: 0,
                             err: MisformattedDefinition,
-                        });
+                        }));
                     }
                     Some((word, encoding)) => {
                         let _ = dict.push((
                             linenum,
                             (HuffCode::from_str(encoding).map_err(|err| {
-                                Error::InvalidEncodingDefinition {
-                                    linenum: linenum,
-                                    line: line.clone(),
+                                Error::InvalidEncodingDefinition(ErrorAt {
+                                    line: linenum,
+                                    character: word.len() + 1,
                                     err: InvalidEncoding(err),
-                                }
+                                })
                             }))?,
                             word.to_string(),
                         ));
@@ -306,11 +304,11 @@ fn main() -> Result<(), Error> {
                             rarest: word,
                         }
                     } else {
-                        return Err(Error::InvalidEncodingDefinition {
-                            linenum: linenum,
-                            line: format!("{}\t{}", word, encoding),
+                        return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                            line: linenum,
+                            character: 0,
                             err: InsufficientDefinition,
-                        });
+                        }));
                     }
                 }
             };
@@ -321,11 +319,11 @@ fn main() -> Result<(), Error> {
                     encodings.common.push(encodings.rarest);
                     encodings.rarest = word;
                 } else {
-                    return Err(Error::InvalidEncodingDefinition {
-                        linenum: linenum,
-                        line: format!("{}\t{}", word, encoding),
+                    return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                        line: linenum,
+                        character: 0,
                         err: InsufficientDefinition,
-                    });
+                    }));
                 }
             }
 
@@ -354,11 +352,11 @@ fn main() -> Result<(), Error> {
                                 ones = 0;
                             }
                             _ => {
-                                return Err(Error::InvalidCodeString {
-                                    linenum: linenum,
-                                    position: pos,
+                                return Err(Error::InvalidCodeString(ErrorAt {
+                                    line: linenum,
+                                    character: pos,
                                     err: NonBinary,
-                                });
+                                }));
                             }
                         }
                     }
@@ -366,11 +364,11 @@ fn main() -> Result<(), Error> {
 
                 // check trailing bits
                 if 0 < ones {
-                    return Err(Error::InvalidCodeString {
-                        linenum: linenum,
-                        position: line.as_bytes().len() - ones,
+                    return Err(Error::InvalidCodeString(ErrorAt {
+                        line: linenum,
+                        character: line.as_bytes().len() - ones,
                         err: MalformedBinary,
-                    });
+                    }));
                 }
                 println!("{}", decoded);
             }

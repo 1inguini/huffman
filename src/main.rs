@@ -6,34 +6,53 @@ use std::*;
 
 #[derive(Debug)]
 enum Error {
+    /// this would never happen
     Unreachable(&'static str),
+
+    /// just relaying io::Error
     IoError(io::Error),
-    NoInput,
-    InvalidEncodingDefinition(ErrorAt<EncodingDefifnitionError>),
-    InvalidCodeString(ErrorAt<CodeStringError>),
+
+    /// there is no input from stdin
+    NoStdin,
+
+    /// something is wrong with encoding definition part of input
+    InvalidEncodingDefinition(IsAt<EncodingDefifnitionError>),
+
+    /// something is wrong with encoded string part of input
+    InvalidCodeString(IsAt<CodeStringError>),
 }
 #[derive(Debug)]
-struct ErrorAt<E> {
+struct IsAt<T> {
+    /// number of lines from the top
     line: usize,
+    /// number of character from the left
     character: usize,
-    err: E,
+    is: T,
 }
 
 #[derive(Debug)]
 enum EncodingDefifnitionError {
+    /// definition is not in "word TAB encoding" style
     MisformattedDefinition,
+
+    /// same code has been associated with another word
     DuplicateEncodings,
+
+    /// there is word missing definition, guessing from defined codes
     InsufficientDefinition,
+    /// code part has something wrong
     InvalidEncoding(ParseHuffCodeError),
 }
 use EncodingDefifnitionError::*;
 
 #[derive(Debug)]
 enum CodeStringError {
+    /// there is something other than 0s and 1s in the string
     NonBinary,
+
+    /// string of binary is not in meaningful format
     MalformedBinary,
 }
-use CodeStringError::*;
 
 // represent the Huffman encoding
 #[derive(Debug, Clone)]
@@ -229,7 +248,7 @@ fn main() -> Result<(), Error> {
     // abort when there is no input from stdin
     if atty::is(atty::Stream::Stdin) {
         println!("Huffman only accepts string from stdin.");
-        return Err(Error::NoInput);
+        return Err(Error::NoStdin);
     }
 
     // get arguments
@@ -264,20 +283,20 @@ fn main() -> Result<(), Error> {
                 // each encoding definition is tab seperated pair of word and encoding
                 match line.split_once('\t') {
                     None => {
-                        return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                        return Err(Error::InvalidEncodingDefinition(IsAt {
                             line: linenum,
                             character: 0,
-                            err: MisformattedDefinition,
+                            is: MisformattedDefinition,
                         }));
                     }
                     Some((word, encoding)) => {
                         let _ = dict.push((
                             linenum,
                             (HuffCode::from_str(encoding).map_err(|err| {
-                                Error::InvalidEncodingDefinition(ErrorAt {
+                                Error::InvalidEncodingDefinition(IsAt {
                                     line: linenum,
                                     character: word.len() + 1,
-                                    err: InvalidEncoding(err),
+                                    is: InvalidEncoding(err),
                                 })
                             }))?,
                             word.to_string(),
@@ -295,7 +314,7 @@ fn main() -> Result<(), Error> {
             };
             let mut encodings: Encodings = match dict.next() {
                 None => {
-                    return Err(Error::NoInput);
+                    return Err(Error::NoStdin);
                 }
                 Some((linenum, encoding, word)) => {
                     if encoding == expected {
@@ -304,10 +323,10 @@ fn main() -> Result<(), Error> {
                             rarest: word,
                         }
                     } else {
-                        return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                        return Err(Error::InvalidEncodingDefinition(IsAt {
                             line: linenum,
                             character: 0,
-                            err: InsufficientDefinition,
+                            is: InsufficientDefinition,
                         }));
                     }
                 }
@@ -319,10 +338,10 @@ fn main() -> Result<(), Error> {
                     encodings.common.push(encodings.rarest);
                     encodings.rarest = word;
                 } else {
-                    return Err(Error::InvalidEncodingDefinition(ErrorAt {
+                    return Err(Error::InvalidEncodingDefinition(IsAt {
                         line: linenum,
                         character: 0,
-                        err: InsufficientDefinition,
+                        is: InsufficientDefinition,
                     }));
                 }
             }
@@ -352,10 +371,10 @@ fn main() -> Result<(), Error> {
                                 ones = 0;
                             }
                             _ => {
-                                return Err(Error::InvalidCodeString(ErrorAt {
+                                return Err(Error::InvalidCodeString(IsAt {
                                     line: linenum,
                                     character: pos,
-                                    err: NonBinary,
+                                    is: CodeStringError::NonBinary,
                                 }));
                             }
                         }
@@ -364,10 +383,10 @@ fn main() -> Result<(), Error> {
 
                 // check trailing bits
                 if 0 < ones {
-                    return Err(Error::InvalidCodeString(ErrorAt {
+                    return Err(Error::InvalidCodeString(IsAt {
                         line: linenum,
                         character: line.as_bytes().len() - ones,
-                        err: MalformedBinary,
+                        is: CodeStringError::MalformedBinary,
                     }));
                 }
                 println!("{}", decoded);
@@ -384,7 +403,7 @@ fn main() -> Result<(), Error> {
             let words = input.split_whitespace().map(str::to_string);
             // derive the huffman encodings of words as a tree
             let huffman_encodings: Encodings =
-                Encodings::new(&mut words.clone()).ok_or(Error::NoInput)?;
+                Encodings::new(&mut words.clone()).ok_or(Error::NoStdin)?;
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.clone().format_encodings());
             println!("");

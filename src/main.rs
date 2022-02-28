@@ -88,49 +88,50 @@ struct Encoding {
 
 mod huffman {
     use crate::util;
+    use bitvec::vec::BitVec;
     use std::fmt::{Debug, Display};
 
     use std::{
         cmp::{Ord, Ordering, PartialEq, PartialOrd},
         collections::{HashMap, VecDeque},
+        convert::TryFrom,
         hash::Hash,
+        ops::Index,
     };
     /// represents the Huffman coding for symbols
     #[derive(Debug)]
-    pub struct Tree<Symbol: Ord + Hash>(Node<Symbol>);
+    pub struct Tree<Symbol: Ord>(Node<Symbol>);
     impl<Symbol> Tree<Symbol>
     where
-        Symbol: Ord + Hash,
+        Symbol: Ord,
     {
         /// creates Canonical Huffman tree from HashMap of symbol to it's occurence
         /// returns None at empty input
-        pub fn new(symbols_and_their_occurence: HashMap<Symbol, usize>) -> Option<Self> {
-            if symbols_and_their_occurence.is_empty() {
-                None
-            } else {
-                // create nodes and sort them by occurence
-                let mut leaves = symbols_and_their_occurence
-                    .into_iter()
-                    .map(|(symbol, occurence)| Root::new(occurence, symbol))
-                    .collect::<Vec<Root<Symbol>>>();
-                leaves.sort_unstable();
-                // prepare two queue, one filled with sorted nodes
-                let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
-                let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
-                // pop the rarer one from the front of two queues
-                loop {
-                    match (
-                        Root::pop_rarer(&mut leaves, &mut branches),
-                        Root::pop_rarer(&mut leaves, &mut branches),
-                    ) {
-                        (Some(node0), Some(node1)) => {
-                            branches.push_front(Root::merge(node0, node1));
-                        }
-                        (Some(node), None) | (None, Some(node)) => {
-                            return Some(Tree(node.inner));
-                        }
-                        (None, None) => (),
+        pub fn new<Map>(symbols_and_their_occurence: Map) -> Option<Self>
+        where
+            Map: Iterator<Item = (Symbol, usize)>,
+        {
+            // create nodes and sort them by occurence
+            let mut leaves = symbols_and_their_occurence
+                .map(|(symbol, occurence)| Root::new(occurence, symbol))
+                .collect::<Vec<Root<Symbol>>>();
+            leaves.sort_unstable();
+            // prepare two queue, one filled with sorted nodes
+            let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
+            let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
+            // pop the rarer one from the front of two queues
+            loop {
+                match (
+                    Root::pop_rarer(&mut leaves, &mut branches),
+                    Root::pop_rarer(&mut leaves, &mut branches),
+                ) {
+                    (Some(node0), Some(node1)) => {
+                        branches.push_front(Root::merge(node0, node1));
                     }
+                    (Some(node), None) | (None, Some(node)) => {
+                        return Some(Tree(node.inner));
+                    }
+                    (None, None) => (),
                 }
             }
         }
@@ -139,8 +140,9 @@ mod huffman {
         pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
         where
             I: Iterator<Item = Symbol>,
+            Symbol: Hash,
         {
-            Self::new(util::count_occurrences(sequence))
+            Self::new(util::count_occurrences(sequence).into_iter())
         }
         /// format Hufftree to string with each word and corresponding encoding
         /// Each word-encoding relation is newwline seperated,
@@ -166,6 +168,30 @@ mod huffman {
                 }
             }
             recur(String::new(), node)
+        }
+
+        fn inner(&self) -> &Node<Symbol> {
+            let Tree(node) = self;
+            node
+        }
+
+        /// encode a single symbol
+        pub fn encode(&self, symbol: &Symbol) -> Option<BitVec> {
+            self.inner().index_owned(symbol)
+        }
+
+        /// encode symbol sequence
+        pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
+        where
+            I: Iterator<Item = Symbol>,
+        {
+            let mut result: BitVec = BitVec::new();
+            for (i, symbol) in symbols.enumerate() {
+                let mut code = self.encode(&symbol).ok_or(i)?;
+                code.reverse();
+                result.append(&mut code);
+            }
+            Ok(result)
         }
     }
 
@@ -288,7 +314,43 @@ mod huffman {
                 Node::Merged { deeper, .. } => deeper.deepest(),
             }
         }
+
+        fn index_owned(&self, index: &Symbol) -> Option<BitVec> {
+            match self {
+                Node::Symbol(symbol) => {
+                    if symbol == index {
+                        Some(BitVec::new())
+                    } else {
+                        None
+                    }
+                }
+                Node::Merged { deeper, shallower } => shallower
+                    .as_ref()
+                    .index_owned(index)
+                    .map(|bits| {
+                        let mut bits = bits;
+                        bits.push(false);
+                        bits
+                    })
+                    .or_else(|| {
+                        deeper.as_ref().index_owned(index).map(|bits| {
+                            let mut bits = bits;
+                            bits.push(true);
+                            bits
+                        })
+                    }),
+            }
+        }
     }
+    // impl<Symbol> Index<&Symbol> for Node<Symbol>
+    // where
+    //     Symbol: Ord,
+    // {
+    //     type Output = Option<BitVec>;
+    //     fn index(&self, index: &Symbol) -> &Self::Output {
+    //         &self.index_return_owned(index)
+    //     }
+    // }
 }
 
 impl Encoding {
@@ -621,20 +683,20 @@ fn main() -> Result<(), Error> {
 
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.format_codebook());
-            // println!();
-            // // print encoded string
-            // let encoded_string = {
-            //     let mut encoded_string = String::new();
-            //     huffman_encodings
-            //         .encode_words(&mut words.clone())
-            //         .map_err(|_| {
-            //             Error::Unreachable("there shouldn't be words that has no encodingXX")
-            //         })?
-            //         .into_iter()
-            //         .for_each(|code| encoded_string.push_str(&format!("{}", code)));
-            //     encoded_string
-            // };
-            // println!("{}", encoded_string);
+            println!();
+            // print encoded string
+            let code_string = {
+                let mut code_string = String::new();
+                huffman_encodings
+                    .encode_sequence(&mut words.clone())
+                    .map_err(|_| {
+                        Error::Unreachable("there shouldn't be words that has no encoding")
+                    })?
+                    .into_iter()
+                    .for_each(|bit| code_string.push(if bit { '1' } else { '0' }));
+                code_string
+            };
+            println!("{}", code_string);
             Ok(())
         }
     };

@@ -10,7 +10,7 @@ enum Error {
     Unreachable(&'static str),
 
     /// just relaying io::Error
-    IoError(io::Error),
+    Io(io::Error),
 
     /// there is no input from stdin
     NoStdin,
@@ -58,29 +58,137 @@ enum CodeStringError {
 }
 
 // represent the Huffman encoding
-#[derive(Debug, Clone)]
-struct Encodings {
+#[derive(Debug, Clone, Default)]
+struct Encoding {
     /// words with encoding prefixed with index-of-vector replication of 1s and ends in 0
     common: Vec<String>,
     /// word with encoding of only 1s
     rarest: String,
 }
 
-impl Encodings {
+mod huffman {
+
+    use crate::util;
+
+    use std::{
+        collections::{HashMap, VecDeque},
+        hash::Hash,
+    };
+    /// represents the Huffman coding for symbols
+    #[derive(Debug)]
+    pub struct Tree<Symbol: Ord + Hash>(Node<Symbol>);
+    impl<Symbol> Tree<Symbol>
+    where
+        Symbol: Ord + Hash,
+    {
+        /// creates Huffman tree from HashMap of symbol to it's occurence
+        /// returns None at empty input
+        pub fn new(symbols_and_their_occurence: HashMap<Symbol, usize>) -> Option<Self> {
+            if symbols_and_their_occurence.is_empty() {
+                None
+            } else {
+                // create nodes and sort them by occurence
+                let mut leaves = symbols_and_their_occurence
+                    .into_iter()
+                    .map(|(symbol, occurence)| Root::new(occurence, symbol))
+                    .collect::<Vec<Root<Symbol>>>();
+                leaves.sort_unstable_by(|r0, r1| Ord::cmp(&r0.occurence, &r1.occurence));
+
+                // prepare two queue, one filled with sorted nodes
+                let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
+                let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
+
+                // pop the rarer one from the front of two queues
+                while let Some(r0) = Root::pop_rarer(&mut leaves, &mut branches) {
+                    match Root::pop_rarer(&mut leaves, &mut branches) {
+                        None => {
+                            break;
+                        }
+                        Some(r1) => branches.push_back(Root::merge(r0, r1)),
+                    }
+                }
+                Some(Tree(Root::pop_rarer(&mut leaves, &mut branches)?.inner))
+            }
+        }
+    }
+    #[derive(Debug)]
+    /// associates a symbol and it's occurence
+    struct Root<Symbol> {
+        /// occurence of the symbol in given sequence, or a sum of childrens
+        occurence: usize,
+
+        /// depth of the tree
+        depth: usize,
+
+        /// a symbol to be encoded
+        inner: Node<Symbol>,
+    }
+    #[derive(Debug)]
+    ///  used at construction of encoding
+    enum Node<Symbol> {
+        Symbol(Symbol),
+        Merged {
+            shallower: Box<Node<Symbol>>,
+            deeper: Box<Node<Symbol>>,
+        },
+    }
+    impl<Symbol> Root<Symbol> {
+        fn new(occurence: usize, symbol: Symbol) -> Self {
+            Root {
+                occurence,
+                depth: 0,
+                inner: Node::Symbol(symbol),
+            }
+        }
+
+        fn merge(root0: Self, root1: Self) -> Self {
+            let (shallower, deeper, depth) = if root0.depth < root1.depth {
+                (root0.inner, root1.inner, root1.depth)
+            } else {
+                (root1.inner, root0.inner, root0.depth)
+            };
+            Root {
+                occurence: root0.occurence + root1.occurence,
+                depth: depth + 1,
+                inner: Node::Merged {
+                    shallower: Box::new(shallower),
+                    deeper: Box::new(deeper),
+                },
+            }
+        }
+        fn pop_rarer<'a>(
+            leaves: &mut VecDeque<Self>,
+            branches: &mut VecDeque<Self>,
+        ) -> Option<Self> {
+            match leaves.front() {
+                None => branches.pop_front(),
+                Some(leaf) => {
+                    if leaf.occurence < branches.front()?.occurence {
+                        leaves.pop_front()
+                    } else {
+                        branches.pop_front()
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl Encoding {
     /// Create a new HuffTree, with the given Iterator of words
     fn new<I>(words: &mut I) -> Option<Self>
     where
         I: Iterator<Item = String>,
     {
         // sort by occurences, from less to more
-        let mut words_occurrences = count_occurrences(words)
+        let mut words_occurrences = util::count_occurrences(words)
             .into_iter()
             .collect::<Vec<(String, usize)>>();
         words_occurrences.sort_unstable_by(|(_, v0), (_, v1)| Ord::cmp(v0, v1));
         let mut words_occurrences = words_occurrences.into_iter().map(|(word, _)| word);
-        words_occurrences.next_back().map(|rarest| Encodings {
+        words_occurrences.next_back().map(|rarest| Encoding {
             common: words_occurrences.collect(),
-            rarest: rarest,
+            rarest,
         })
     }
 
@@ -92,7 +200,7 @@ impl Encodings {
         let mut line_sep = false;
         for (word, code) in self.into_iter() {
             if line_sep {
-                result.push_str("\n");
+                result.push('\n');
             };
             line_sep = true;
             result.push_str(&format!("{}\t{}", word, code));
@@ -112,21 +220,13 @@ impl Encodings {
         Ok(result)
     }
 }
-impl Default for Encodings {
-    fn default() -> Self {
-        Encodings {
-            common: Vec::new(),
-            rarest: String::new(),
-        }
-    }
-}
 
 #[derive(Debug)]
 struct EncodingsIterator {
     index: usize,
-    inner: Encodings,
+    inner: Encoding,
 }
-impl IntoIterator for Encodings {
+impl IntoIterator for Encoding {
     type Item = (String, HuffCode);
     type IntoIter = EncodingsIterator;
     fn into_iter(self) -> Self::IntoIter {
@@ -188,13 +288,13 @@ impl str::FromStr for HuffCode {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         use ParseHuffCodeError::*;
         let s = s.as_bytes();
-        if !s.into_iter().all(|byte| *byte == b'0' || *byte == b'1') {
+        if !s.iter().all(|byte| *byte == b'0' || *byte == b'1') {
             return Err(NonBinary);
         }
         return match s.split_last() {
             None => Err(Empty),
             Some((last, init)) => Ok(HuffCode {
-                init_length: if init.into_iter().all(|b| *b == b'1') {
+                init_length: if init.iter().all(|b| *b == b'1') {
                     init.len()
                 } else {
                     return Err(InvalidBinary);
@@ -203,21 +303,6 @@ impl str::FromStr for HuffCode {
             }),
         };
     }
-}
-
-/// count occurrences of each word
-fn count_occurrences<I>(words: &mut I) -> HashMap<String, usize>
-where
-    I: Iterator<Item = String>,
-{
-    let mut words_occurrences: HashMap<String, usize> = HashMap::new();
-    for word in words {
-        match &words_occurrences.get(&word) {
-            None => words_occurrences.insert(word, 0),
-            Some(&occurrences) => words_occurrences.insert(word, occurrences + 1),
-        };
-    }
-    words_occurrences
 }
 
 // options
@@ -245,7 +330,7 @@ fn main() -> Result<(), Error> {
     let mut stdout = BufWriter::new(stdout.lock());
     macro_rules! println {
         ($($arg:tt)*) => ({
-            $crate::writeln!(stdout, $($arg)*).map_err(Error::IoError)?;
+            $crate::writeln!(stdout, $($arg)*).map_err(Error::Io)?;
         })
     }
     // abort when there is no input from stdin
@@ -271,9 +356,9 @@ fn main() -> Result<(), Error> {
             // record encodings
             let mut dict: Vec<(usize, HuffCode, String)> = Vec::new();
             for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::IoError)?;
+                let line = line.map_err(Error::Io)?;
                 // encoding definition part starts after and ends before empty line
-                if line == "" {
+                if line.is_empty() {
                     if trailing {
                         break;
                     } else {
@@ -324,13 +409,13 @@ fn main() -> Result<(), Error> {
                 init_length: 0,
                 last: false,
             };
-            let mut encodings: Encodings = match dict.next() {
+            let mut encodings: Encoding = match dict.next() {
                 None => {
                     return Err(Error::NoStdin);
                 }
                 Some((linenum, encoding, word)) => {
                     if encoding == expected {
-                        Encodings {
+                        Encoding {
                             common: Vec::new(),
                             rarest: word,
                         }
@@ -360,16 +445,16 @@ fn main() -> Result<(), Error> {
 
             // decode string
             for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::IoError)?;
-                if line == "" {
+                let line = line.map_err(Error::Io)?;
+                if line.is_empty() {
                     continue;
                 };
                 let mut decoded: String = String::new();
                 let mut ones: usize = 0;
-                for (pos, &byte) in line.as_bytes().into_iter().enumerate() {
+                for (pos, &byte) in line.as_bytes().iter().enumerate() {
                     if encodings.common.len() <= ones {
                         decoded.push_str(&encodings.rarest);
-                        decoded.push_str("\n");
+                        decoded.push('\n');
                         ones = 0;
                     } else {
                         match byte {
@@ -379,7 +464,7 @@ fn main() -> Result<(), Error> {
                                     .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
                                     "ones should have been resetted before it gets out of bounds",
                                 ))?);
-                                decoded.push_str("\n");
+                                decoded.push('\n');
                                 ones = 0;
                             }
                             _ => {
@@ -411,14 +496,14 @@ fn main() -> Result<(), Error> {
             io::stdin()
                 .lock()
                 .read_to_string(&mut input)
-                .map_err(Error::IoError)?;
+                .map_err(Error::Io)?;
             let words = input.split_whitespace().map(str::to_string);
             // derive the huffman encodings of words as a tree
-            let huffman_encodings: Encodings =
-                Encodings::new(&mut words.clone()).ok_or(Error::NoStdin)?;
+            let huffman_encodings: Encoding =
+                Encoding::new(&mut words.clone()).ok_or(Error::NoStdin)?;
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.clone().format_encodings());
-            println!("");
+            println!();
             // print encoded string
             let encoded_string = {
                 let mut encoded_string = String::new();
@@ -435,4 +520,24 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
     };
+}
+
+mod util {
+    use std::{collections::HashMap, hash::Hash};
+
+    /// count occurrences of each word
+    pub fn count_occurrences<I, T>(words: &mut I) -> HashMap<T, usize>
+    where
+        I: Iterator<Item = T>,
+        T: Eq + Hash,
+    {
+        let mut words_occurrences: HashMap<T, usize> = HashMap::new();
+        for word in words {
+            match &words_occurrences.get(&word) {
+                None => words_occurrences.insert(word, 0),
+                Some(&occurrences) => words_occurrences.insert(word, occurrences + 1),
+            };
+        }
+        words_occurrences
+    }
 }

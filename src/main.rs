@@ -4,6 +4,26 @@ use std::io::{BufRead, BufWriter, Read, Write};
 use std::str::FromStr;
 use std::*;
 
+mod util {
+    use std::{collections::HashMap, hash::Hash};
+
+    /// count occurrences of each word
+    pub fn count_occurrences<I, T>(words: &mut I) -> HashMap<T, usize>
+    where
+        I: Iterator<Item = T>,
+        T: Eq + Hash,
+    {
+        let mut words_occurrences: HashMap<T, usize> = HashMap::new();
+        for word in words {
+            match &words_occurrences.get(&word) {
+                None => words_occurrences.insert(word, 1),
+                Some(&occurrences) => words_occurrences.insert(word, occurrences + 1),
+            };
+        }
+        words_occurrences
+    }
+}
+
 #[derive(Debug)]
 enum Error {
     /// this would never happen
@@ -177,11 +197,19 @@ mod huffman {
         }
 
         /// merge two roots, combinging their occurences
+        /// if the depth of two root are the same,
+        /// then move the root with smaller deepest node to the `deeper` field
         fn merge(root0: Self, root1: Self) -> Self {
-            let (shallower, deeper) = if root0.depth <= root1.depth {
-                (root0, root1)
-            } else {
-                (root1, root0)
+            let (shallower, deeper) = match Ord::cmp(&root0.depth, &root1.depth) {
+                Ordering::Less => (root0, root1),
+                Ordering::Greater => (root1, root0),
+                Ordering::Equal => {
+                    if root0.inner.deepest() <= root1.inner.deepest() {
+                        (root0, root1)
+                    } else {
+                        (root1, root0)
+                    }
+                }
             };
             Root {
                 occurence: shallower.occurence + deeper.occurence,
@@ -214,10 +242,7 @@ mod huffman {
     {
         fn cmp(&self, other: &Self) -> Ordering {
             match Ord::cmp(&self.occurence, &other.occurence) {
-                Ordering::Equal => Ord::cmp(
-                    self.inner.deepest_smallest(),
-                    other.inner.deepest_smallest(),
-                ),
+                Ordering::Equal => Ord::cmp(self.inner.deepest(), other.inner.deepest()),
                 ord => ord,
             }
         }
@@ -257,10 +282,10 @@ mod huffman {
         Symbol: Ord,
     {
         /// view smallest symbol in deepest nodes
-        fn deepest_smallest(&self) -> &Symbol {
+        fn deepest(&self) -> &Symbol {
             match self {
                 Node::Symbol(symbol) => symbol,
-                Node::Merged { deeper, .. } => deeper.deepest_smallest(),
+                Node::Merged { deeper, .. } => deeper.deepest(),
             }
         }
     }
@@ -594,7 +619,6 @@ fn main() -> Result<(), Error> {
             let huffman_encodings: huffman::Tree<&str> =
                 huffman::Tree::from_sequence(&mut words.clone()).ok_or(Error::NoStdin)?;
 
-            println!("{:#?}", &huffman_encodings);
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.format_codebook());
             // println!();
@@ -614,24 +638,4 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
     };
-}
-
-mod util {
-    use std::{collections::HashMap, hash::Hash};
-
-    /// count occurrences of each word
-    pub fn count_occurrences<I, T>(words: &mut I) -> HashMap<T, usize>
-    where
-        I: Iterator<Item = T>,
-        T: Eq + Hash,
-    {
-        let mut words_occurrences: HashMap<T, usize> = HashMap::new();
-        for word in words {
-            match &words_occurrences.get(&word) {
-                None => words_occurrences.insert(word, 1),
-                Some(&occurrences) => words_occurrences.insert(word, occurrences + 1),
-            };
-        }
-        words_occurrences
-    }
 }

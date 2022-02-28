@@ -71,6 +71,7 @@ mod huffman {
     use std::fmt::{Debug, Display};
 
     use std::{
+        cmp::{Ord, Ordering, PartialEq, PartialOrd},
         collections::{HashMap, VecDeque},
         hash::Hash,
     };
@@ -81,7 +82,7 @@ mod huffman {
     where
         Symbol: Ord + Hash,
     {
-        /// creates Huffman tree from HashMap of symbol to it's occurence
+        /// creates Canonical Huffman tree from HashMap of symbol to it's occurence
         /// returns None at empty input
         pub fn new(symbols_and_their_occurence: HashMap<Symbol, usize>) -> Option<Self> {
             if symbols_and_their_occurence.is_empty() {
@@ -92,7 +93,7 @@ mod huffman {
                     .into_iter()
                     .map(|(symbol, occurence)| Root::new(occurence, symbol))
                     .collect::<Vec<Root<Symbol>>>();
-                leaves.sort_unstable_by(|r0, r1| Ord::cmp(&r0.occurence, &r1.occurence));
+                leaves.sort_unstable();
                 // prepare two queue, one filled with sorted nodes
                 let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
                 let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
@@ -131,7 +132,7 @@ mod huffman {
             let Tree(node) = self;
             fn recur<Symbol>(code: String, current: &Node<Symbol>) -> String
             where
-                Symbol: Display,
+                Symbol: Display + Ord,
             {
                 match current {
                     Node::Symbol(symbol) => format!("{}\t{}", symbol, code),
@@ -148,8 +149,12 @@ mod huffman {
         }
     }
 
+    #[derive(Debug)]
     /// associates a symbol and it's occurence
-    struct Root<Symbol> {
+    struct Root<Symbol>
+    where
+        Symbol: Ord,
+    {
         /// occurence of the symbol in given sequence, or a sum of childrens
         occurence: usize,
 
@@ -159,16 +164,10 @@ mod huffman {
         /// a symbol to be encoded
         inner: Node<Symbol>,
     }
-    ///  used at construction of encoding
-    #[derive(Debug)]
-    enum Node<Symbol> {
-        Symbol(Symbol),
-        Merged {
-            shallower: Box<Node<Symbol>>,
-            deeper: Box<Node<Symbol>>,
-        },
-    }
-    impl<Symbol> Root<Symbol> {
+    impl<Symbol> Root<Symbol>
+    where
+        Symbol: Ord,
+    {
         fn new(occurence: usize, symbol: Symbol) -> Self {
             Root {
                 occurence,
@@ -179,17 +178,17 @@ mod huffman {
 
         /// merge two roots, combinging their occurences
         fn merge(root0: Self, root1: Self) -> Self {
-            let (shallower, deeper, depth) = if root0.depth < root1.depth {
-                (root0.inner, root1.inner, root1.depth)
+            let (shallower, deeper) = if root0.depth <= root1.depth {
+                (root0, root1)
             } else {
-                (root1.inner, root0.inner, root0.depth)
+                (root1, root0)
             };
             Root {
-                occurence: root0.occurence + root1.occurence,
-                depth: depth + 1,
+                occurence: shallower.occurence + deeper.occurence,
+                depth: deeper.depth + 1,
                 inner: Node::Merged {
-                    shallower: Box::new(shallower),
-                    deeper: Box::new(deeper),
+                    shallower: Box::new(shallower.inner),
+                    deeper: Box::new(deeper.inner),
                 },
             }
         }
@@ -198,7 +197,7 @@ mod huffman {
         fn pop_rarer(queue0: &mut VecDeque<Self>, queue1: &mut VecDeque<Self>) -> Option<Self> {
             match (queue0.front(), queue1.front()) {
                 (Some(node0), Some(node1)) => {
-                    if node0.occurence < node1.occurence {
+                    if node0.occurence <= node1.occurence {
                         queue0.pop_front()
                     } else {
                         queue1.pop_front()
@@ -206,6 +205,62 @@ mod huffman {
                 }
                 (Some(_), None) => queue0.pop_front(),
                 (_, _) => queue1.pop_front(),
+            }
+        }
+    }
+    impl<Symbol> Ord for Root<Symbol>
+    where
+        Symbol: Ord,
+    {
+        fn cmp(&self, other: &Self) -> Ordering {
+            match Ord::cmp(&self.occurence, &other.occurence) {
+                Ordering::Equal => Ord::cmp(
+                    self.inner.deepest_smallest(),
+                    other.inner.deepest_smallest(),
+                ),
+                ord => ord,
+            }
+        }
+    }
+    impl<Symbol> PartialOrd for Root<Symbol>
+    where
+        Symbol: Ord,
+    {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+    impl<Symbol> PartialEq for Root<Symbol>
+    where
+        Symbol: Ord,
+    {
+        fn eq(&self, other: &Self) -> bool {
+            matches!(self.cmp(other), Ordering::Equal)
+        }
+    }
+    impl<Symbol> Eq for Root<Symbol> where Symbol: Ord {}
+
+    ///  used at construction of encoding
+    #[derive(Debug)]
+    enum Node<Symbol>
+    where
+        Symbol: Ord,
+    {
+        Symbol(Symbol),
+        Merged {
+            shallower: Box<Node<Symbol>>,
+            deeper: Box<Node<Symbol>>,
+        },
+    }
+    impl<Symbol> Node<Symbol>
+    where
+        Symbol: Ord,
+    {
+        /// view smallest symbol in deepest nodes
+        fn deepest_smallest(&self) -> &Symbol {
+            match self {
+                Node::Symbol(symbol) => symbol,
+                Node::Merged { deeper, .. } => deeper.deepest_smallest(),
             }
         }
     }

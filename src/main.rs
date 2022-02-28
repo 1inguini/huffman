@@ -69,6 +69,7 @@ struct Encoding {
 mod huffman {
 
     use crate::util;
+    use core::fmt::Debug;
 
     use std::{
         collections::{HashMap, VecDeque},
@@ -79,7 +80,7 @@ mod huffman {
     pub struct Tree<Symbol: Ord + Hash>(Node<Symbol>);
     impl<Symbol> Tree<Symbol>
     where
-        Symbol: Ord + Hash,
+        Symbol: Ord + Hash + Debug,
     {
         /// creates Huffman tree from HashMap of symbol to it's occurence
         /// returns None at empty input
@@ -93,22 +94,32 @@ mod huffman {
                     .map(|(symbol, occurence)| Root::new(occurence, symbol))
                     .collect::<Vec<Root<Symbol>>>();
                 leaves.sort_unstable_by(|r0, r1| Ord::cmp(&r0.occurence, &r1.occurence));
-
                 // prepare two queue, one filled with sorted nodes
                 let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
                 let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
-
                 // pop the rarer one from the front of two queues
-                while let Some(r0) = Root::pop_rarer(&mut leaves, &mut branches) {
-                    match Root::pop_rarer(&mut leaves, &mut branches) {
-                        None => {
-                            break;
+                loop {
+                    match (
+                        Root::pop_rarer(&mut leaves, &mut branches),
+                        Root::pop_rarer(&mut leaves, &mut branches),
+                    ) {
+                        (Some(node0), Some(node1)) => {
+                            branches.push_front(Root::merge(node0, node1));
                         }
-                        Some(r1) => branches.push_back(Root::merge(r0, r1)),
+                        (Some(node), None) | (None, Some(node)) => {
+                            return Some(Tree(node.inner));
+                        }
+                        (None, None) => (),
                     }
                 }
-                Some(Tree(Root::pop_rarer(&mut leaves, &mut branches)?.inner))
             }
+        }
+
+        pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
+        where
+            I: Iterator<Item = Symbol>,
+        {
+            Self::new(util::count_occurrences(sequence))
         }
     }
     #[derive(Debug)]
@@ -141,6 +152,7 @@ mod huffman {
             }
         }
 
+        /// merge two roots, combinging their occurences
         fn merge(root0: Self, root1: Self) -> Self {
             let (shallower, deeper, depth) = if root0.depth < root1.depth {
                 (root0.inner, root1.inner, root1.depth)
@@ -156,19 +168,19 @@ mod huffman {
                 },
             }
         }
-        fn pop_rarer<'a>(
-            leaves: &mut VecDeque<Self>,
-            branches: &mut VecDeque<Self>,
-        ) -> Option<Self> {
-            match leaves.front() {
-                None => branches.pop_front(),
-                Some(leaf) => {
-                    if leaf.occurence < branches.front()?.occurence {
-                        leaves.pop_front()
+
+        /// pop the rarer element at the front of two queues
+        fn pop_rarer(queue0: &mut VecDeque<Self>, queue1: &mut VecDeque<Self>) -> Option<Self> {
+            match (queue0.front(), queue1.front()) {
+                (Some(node0), Some(node1)) => {
+                    if node0.occurence < node1.occurence {
+                        queue0.pop_front()
                     } else {
-                        branches.pop_front()
+                        queue1.pop_front()
                     }
                 }
+                (Some(_), None) => queue0.pop_front(),
+                (_, _) => queue1.pop_front(),
             }
         }
     }
@@ -497,26 +509,27 @@ fn main() -> Result<(), Error> {
                 .lock()
                 .read_to_string(&mut input)
                 .map_err(Error::Io)?;
-            let words = input.split_whitespace().map(str::to_string);
+            let words = input.split_whitespace();
             // derive the huffman encodings of words as a tree
-            let huffman_encodings: Encoding =
-                Encoding::new(&mut words.clone()).ok_or(Error::NoStdin)?;
+            let huffman_encodings: huffman::Tree<&str> =
+                huffman::Tree::from_sequence(&mut words.clone()).ok_or(Error::NoStdin)?;
+            println!("{:?}", &huffman_encodings);
             // print each word and corresponding encoding
-            println!("{}", huffman_encodings.clone().format_encodings());
-            println!();
-            // print encoded string
-            let encoded_string = {
-                let mut encoded_string = String::new();
-                huffman_encodings
-                    .encode_words(&mut words.clone())
-                    .map_err(|_| {
-                        Error::Unreachable("there shouldn't be words that has no encodingXX")
-                    })?
-                    .into_iter()
-                    .for_each(|code| encoded_string.push_str(&format!("{}", code)));
-                encoded_string
-            };
-            println!("{}", encoded_string);
+            // println!("{}", huffman_encodings.clone().format_encodings());
+            // println!();
+            // // print encoded string
+            // let encoded_string = {
+            //     let mut encoded_string = String::new();
+            //     huffman_encodings
+            //         .encode_words(&mut words.clone())
+            //         .map_err(|_| {
+            //             Error::Unreachable("there shouldn't be words that has no encodingXX")
+            //         })?
+            //         .into_iter()
+            //         .for_each(|code| encoded_string.push_str(&format!("{}", code)));
+            //     encoded_string
+            // };
+            // println!("{}", encoded_string);
             Ok(())
         }
     };

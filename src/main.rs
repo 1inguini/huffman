@@ -149,7 +149,6 @@ mod huffman {
     }
 
     /// associates a symbol and it's occurence
-    #[derive(Debug)]
     struct Root<Symbol> {
         /// occurence of the symbol in given sequence, or a sum of childrens
         occurence: usize,
@@ -540,6 +539,7 @@ fn main() -> Result<(), Error> {
             let huffman_encodings: huffman::Tree<&str> =
                 huffman::Tree::from_sequence(&mut words.clone()).ok_or(Error::NoStdin)?;
 
+            println!("{:#?}", &huffman_encodings);
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.format_codebook());
             // println!();
@@ -573,7 +573,7 @@ mod util {
         let mut words_occurrences: HashMap<T, usize> = HashMap::new();
         for word in words {
             match &words_occurrences.get(&word) {
-                None => words_occurrences.insert(word, 0),
+                None => words_occurrences.insert(word, 1),
                 Some(&occurrences) => words_occurrences.insert(word, occurrences + 1),
             };
         }

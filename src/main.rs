@@ -67,9 +67,8 @@ struct Encoding {
 }
 
 mod huffman {
-
     use crate::util;
-    use core::fmt::Debug;
+    use std::fmt::{Debug, Display};
 
     use std::{
         collections::{HashMap, VecDeque},
@@ -80,7 +79,7 @@ mod huffman {
     pub struct Tree<Symbol: Ord + Hash>(Node<Symbol>);
     impl<Symbol> Tree<Symbol>
     where
-        Symbol: Ord + Hash + Debug,
+        Symbol: Ord + Hash,
     {
         /// creates Huffman tree from HashMap of symbol to it's occurence
         /// returns None at empty input
@@ -115,15 +114,42 @@ mod huffman {
             }
         }
 
+        /// count occurence of each symbol in givin symbol sequence and construct Huffman tree
         pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
         where
             I: Iterator<Item = Symbol>,
         {
             Self::new(util::count_occurrences(sequence))
         }
+        /// format Hufftree to string with each word and corresponding encoding
+        /// Each word-encoding relation is newwline seperated,
+        /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
+        pub fn format_codebook(&self) -> String
+        where
+            Symbol: Display,
+        {
+            let Tree(node) = self;
+            fn recur<Symbol>(code: String, current: &Node<Symbol>) -> String
+            where
+                Symbol: Display,
+            {
+                match current {
+                    Node::Symbol(symbol) => format!("{}\t{}", symbol, code),
+                    Node::Merged { shallower, deeper } => {
+                        format!(
+                            "{}\n{}",
+                            recur(format!("{}0", code), shallower),
+                            recur(format!("{}1", code), deeper)
+                        )
+                    }
+                }
+            }
+            recur(String::new(), node)
+        }
     }
-    #[derive(Debug)]
+
     /// associates a symbol and it's occurence
+    #[derive(Debug)]
     struct Root<Symbol> {
         /// occurence of the symbol in given sequence, or a sum of childrens
         occurence: usize,
@@ -134,8 +160,8 @@ mod huffman {
         /// a symbol to be encoded
         inner: Node<Symbol>,
     }
-    #[derive(Debug)]
     ///  used at construction of encoding
+    #[derive(Debug)]
     enum Node<Symbol> {
         Symbol(Symbol),
         Merged {
@@ -513,9 +539,9 @@ fn main() -> Result<(), Error> {
             // derive the huffman encodings of words as a tree
             let huffman_encodings: huffman::Tree<&str> =
                 huffman::Tree::from_sequence(&mut words.clone()).ok_or(Error::NoStdin)?;
-            println!("{:?}", &huffman_encodings);
+
             // print each word and corresponding encoding
-            // println!("{}", huffman_encodings.clone().format_encodings());
+            println!("{}", huffman_encodings.format_codebook());
             // println!();
             // // print encoded string
             // let encoded_string = {

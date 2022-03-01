@@ -689,10 +689,10 @@ fn main() -> Result<(), Error> {
                 .lock()
                 .read_to_string(&mut input)
                 .map_err(Error::Io)?;
-            let words = input.split_whitespace();
+            let words = || input.split_whitespace();
             // derive the huffman encodings of words as a tree
             let huffman_encodings: huffman::Tree<&str> =
-                huffman::Tree::from_sequence(&mut words.clone()).ok_or(Error::NoStdin)?;
+                huffman::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
 
             // print each word and corresponding encoding
             println!("{}", huffman_encodings.format_codebook());
@@ -700,13 +700,9 @@ fn main() -> Result<(), Error> {
             // print encoded string
             println!(
                 "{}",
-                util::format_bits(
-                    &huffman_encodings
-                        .encode_sequence(&mut words.clone())
-                        .map_err(|_| {
-                            Error::Unreachable("there shouldn't be words that has no encoding")
-                        })?,
-                )
+                util::format_bits(&huffman_encodings.encode_sequence(&mut words()).map_err(
+                    |_| { Error::Unreachable("there shouldn't be words that has no encoding") }
+                )?,)
             );
             Ok(())
         }

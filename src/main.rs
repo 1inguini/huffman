@@ -94,7 +94,6 @@ mod huffman {
     use std::{
         cmp::{Ord, Ordering, PartialEq, PartialOrd},
         collections::{HashMap, VecDeque},
-        convert::TryFrom,
         hash::Hash,
         ops::Index,
     };
@@ -188,7 +187,6 @@ mod huffman {
             let mut result: BitVec = BitVec::new();
             for (i, symbol) in symbols.enumerate() {
                 let mut code = self.encode(&symbol).ok_or(i)?;
-                code.reverse();
                 result.append(&mut code);
             }
             Ok(result)
@@ -316,6 +314,12 @@ mod huffman {
         }
 
         fn index_owned(&self, index: &Symbol) -> Option<BitVec> {
+            let mut code = self.index_owned_reversed(index)?;
+            code.reverse();
+            Some(code)
+        }
+
+        fn index_owned_reversed(&self, index: &Symbol) -> Option<BitVec> {
             match self {
                 Node::Symbol(symbol) => {
                     if symbol == index {
@@ -326,14 +330,14 @@ mod huffman {
                 }
                 Node::Merged { deeper, shallower } => shallower
                     .as_ref()
-                    .index_owned(index)
+                    .index_owned_reversed(index)
                     .map(|bits| {
                         let mut bits = bits;
                         bits.push(false);
                         bits
                     })
                     .or_else(|| {
-                        deeper.as_ref().index_owned(index).map(|bits| {
+                        deeper.as_ref().index_owned_reversed(index).map(|bits| {
                             let mut bits = bits;
                             bits.push(true);
                             bits

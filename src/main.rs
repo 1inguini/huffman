@@ -108,7 +108,9 @@ mod huffman {
     };
     /// represents the Huffman coding for symbols
     #[derive(Debug)]
-    pub struct Tree<Symbol: Ord>(Node<Symbol>);
+    pub struct Tree<Symbol: Ord> {
+        inner: Node<Symbol>,
+    }
     impl<Symbol> Tree<Symbol>
     where
         Symbol: Ord,
@@ -127,19 +129,19 @@ mod huffman {
             // prepare two queue, one filled with sorted nodes
             let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
             let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
-            // pop the rarer one from the front of two queues
+
             loop {
                 match (
                     Root::pop_rarer(&mut leaves, &mut branches),
                     Root::pop_rarer(&mut leaves, &mut branches),
                 ) {
-                    (Some(node0), Some(node1)) => {
-                        branches.push_front(Root::merge(node0, node1));
-                    }
+                    // pop the rarest two roots from the front of two queues and merge them ...
+                    (Some(node0), Some(node1)) => branches.push_front(Root::merge(node0, node1)),
+                    // ... until there is only one root
                     (Some(node), None) | (None, Some(node)) => {
-                        return Some(Tree(node.inner));
+                        return Some(Tree { inner: node.inner })
                     }
-                    (None, None) => (),
+                    (None, None) => return None,
                 }
             }
         }
@@ -155,12 +157,11 @@ mod huffman {
         /// format Hufftree to string with each word and corresponding encoding
         /// Each word-encoding relation is newwline seperated,
         /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
-        pub fn format_codebook(&self) -> String
+        pub fn codebook_tsv(&self) -> String
         where
             Symbol: Display,
         {
-            let Tree(node) = self;
-            fn recur<Symbol>(code: String, current: &Node<Symbol>) -> String
+            fn records<Symbol>(code: String, current: &Node<Symbol>) -> String
             where
                 Symbol: Display + Ord,
             {
@@ -169,23 +170,18 @@ mod huffman {
                     Node::Merged { shallower, deeper } => {
                         format!(
                             "{}\n{}",
-                            recur(format!("{}0", code), shallower),
-                            recur(format!("{}1", code), deeper)
+                            records(format!("{}0", code), shallower),
+                            records(format!("{}1", code), deeper)
                         )
                     }
                 }
             }
-            recur(String::new(), node)
-        }
-
-        fn inner(&self) -> &Node<Symbol> {
-            let Tree(node) = self;
-            node
+            format!("Symbol\tCode\n{}", records(String::new(), &self.inner))
         }
 
         /// encode a single symbol
         pub fn encode(&self, symbol: &Symbol) -> Option<BitVec> {
-            self.inner().index_owned(symbol)
+            self.inner.index_owned(symbol)
         }
 
         /// encode symbol sequence
@@ -498,48 +494,108 @@ impl str::FromStr for HuffCode {
 }
 
 // options
-use clap::{Parser, Subcommand};
+use clap::{ArgEnum, CommandFactory, Parser, Subcommand};
 
 /// represent all acceptable arguments
-#[derive(Parser)]
+#[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
-struct Args {
+struct Cli {
     #[clap(subcommand)]
     mode: Mode,
 }
-#[derive(Subcommand)]
+#[derive(Debug, Subcommand)]
 enum Mode {
     /// encodes words string
-    Encode,
+    Encode(Encode),
 
     /// decodes words string
-    Decode,
+    Decode(Decode),
+}
+#[derive(Debug, Parser)]
+struct Encode {
+    #[clap(long, short = 'b', arg_enum, multiple_occurrences(true))]
+    /// codebook output format
+    codebook_format: CodebookFormat,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum)]
+enum CodebookFormat {
+    /// don't output
+    Hide,
+    /// tab separated values
+    Tsv,
+}
+
+#[derive(Debug, Parser)]
+struct Decode {}
+
+impl Cli {
+    fn init() -> Cli {
+        // abort when there is no input from stdin
+        if atty::is(atty::Stream::Stdin) {
+            Cli::command()
+                .error(
+                    clap::ErrorKind::MissingRequiredArgument,
+                    "Huffman only accepts string from stdin.",
+                )
+                .exit();
+            // return Err(Error::NoStdin);
+        }
+        // get arguments
+        Cli::parse()
+    }
 }
 
 fn main() -> Result<(), Error> {
+    let args = Cli::init();
+
     // prepare stdout with buffering
     let stdout = io::stdout();
     let mut stdout = BufWriter::new(stdout.lock());
+
+    // prepare stdin with buffering
+    let stdin = io::stdin();
+    let mut stdin = stdin.lock();
+
     macro_rules! println {
         ($($arg:tt)*) => ({
-            $crate::writeln!(stdout, $($arg)*).map_err(Error::Io)?;
+            writeln!(stdout, $($arg)*).map_err(Error::Io)?;
         })
     }
-    // abort when there is no input from stdin
-    if atty::is(atty::Stream::Stdin) {
-        println!("Huffman only accepts string from stdin.");
-        return Err(Error::NoStdin);
-    }
-
-    // get arguments
-    let args = Args::parse();
 
     // run each subcommands
     return match args.mode {
-        Mode::Decode => {
+        Mode::Encode(Encode { codebook_format }) => {
+            // get words from stdin, waits until EOF
+            let input = {
+                let mut input = String::new();
+                stdin.read_to_string(&mut input).map_err(Error::Io)?;
+                input
+            };
+            let words = || input.split_whitespace();
+            // derive the huffman encodings of words as a tree
+            let huffman_encodings: huffman::Tree<&str> =
+                huffman::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
+
+            // print codebook
+            match codebook_format {
+                CodebookFormat::Hide => {}
+                CodebookFormat::Tsv => {
+                    println!("{}", huffman_encodings.codebook_tsv());
+                    println!();
+                }
+            }
+            // print encoded string
+            println!(
+                "{}",
+                util::format_bits(&huffman_encodings.encode_sequence(&mut words()).map_err(
+                    |_| Error::Unreachable("there shouldn't be words that has no encoding")
+                )?,)
+            );
+            Ok(())
+        }
+        Mode::Decode(Decode { .. }) => {
             // get lines from stdin, one line at a time
-            let stdin = io::stdin();
-            let stdin = stdin.lock();
             let mut lines = stdin.lines().enumerate();
 
             // skip newlines before encoding definitions
@@ -680,30 +736,6 @@ fn main() -> Result<(), Error> {
                 }
                 println!("{}", decoded);
             }
-            Ok(())
-        }
-        Mode::Encode => {
-            // get words from stdin, waits until EOF
-            let mut input = String::new();
-            io::stdin()
-                .lock()
-                .read_to_string(&mut input)
-                .map_err(Error::Io)?;
-            let words = || input.split_whitespace();
-            // derive the huffman encodings of words as a tree
-            let huffman_encodings: huffman::Tree<&str> =
-                huffman::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
-
-            // print each word and corresponding encoding
-            println!("{}", huffman_encodings.format_codebook());
-            println!();
-            // print encoded string
-            println!(
-                "{}",
-                util::format_bits(&huffman_encodings.encode_sequence(&mut words()).map_err(
-                    |_| { Error::Unreachable("there shouldn't be words that has no encoding") }
-                )?,)
-            );
             Ok(())
         }
     };

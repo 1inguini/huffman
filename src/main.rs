@@ -5,6 +5,7 @@ use std::str::FromStr;
 use std::*;
 
 mod util {
+    use bitvec::vec::BitVec;
     use std::{collections::HashMap, hash::Hash};
 
     /// count occurrences of each word
@@ -21,6 +22,14 @@ mod util {
             };
         }
         words_occurrences
+    }
+
+    pub fn format_bits(bits: &BitVec) -> String {
+        let mut result = String::new();
+        for bit in bits.iter() {
+            result.push(if *bit { '1' } else { '0' });
+        }
+        result
     }
 }
 
@@ -689,18 +698,16 @@ fn main() -> Result<(), Error> {
             println!("{}", huffman_encodings.format_codebook());
             println!();
             // print encoded string
-            let code_string = {
-                let mut code_string = String::new();
-                huffman_encodings
-                    .encode_sequence(&mut words.clone())
-                    .map_err(|_| {
-                        Error::Unreachable("there shouldn't be words that has no encoding")
-                    })?
-                    .into_iter()
-                    .for_each(|bit| code_string.push(if bit { '1' } else { '0' }));
-                code_string
-            };
-            println!("{}", code_string);
+            println!(
+                "{}",
+                util::format_bits(
+                    &huffman_encodings
+                        .encode_sequence(&mut words.clone())
+                        .map_err(|_| {
+                            Error::Unreachable("there shouldn't be words that has no encoding")
+                        })?,
+                )
+            );
             Ok(())
         }
     };

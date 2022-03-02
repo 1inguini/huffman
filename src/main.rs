@@ -195,9 +195,41 @@ mod huffman {
 
         // decode bits
         pub fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
-            self.inner.decode(bits)
+            // self.inner.decode(bits)
+            match &self.inner.as_ref() {
+                Node::Symbol(..) => Err(0),
+                Node::Branch { zero, one } => {
+                    let mut result: Vec<&Symbol> = Vec::new();
+                    let mut position = 0;
+                    let mut punctuation = true;
+                    let (mut on_false, mut on_true) = (zero, one);
+                    for (pos, bit) in bits.iter().enumerate() {
+                        position = pos;
+                        let walk = if *bit { on_true } else { on_false };
+                        match walk.as_ref() {
+                            Node::Symbol(symbol) => {
+                                result.push(symbol);
+                                on_false = zero;
+                                on_true = one;
+                                punctuation = true;
+                            }
+                            Node::Branch { one, zero } => {
+                                on_false = zero;
+                                on_true = one;
+                                punctuation = false;
+                            }
+                        }
+                    }
+                    if punctuation {
+                        Ok(result.into_iter())
+                    } else {
+                        Err(position)
+                    }
+                }
+            }
         }
     }
+
     impl<Symbol> Index<&BitSlice> for Tree<Symbol>
     where
         Symbol: Ord,

@@ -323,66 +323,6 @@ mod huffman {
             }
             None
         }
-
-        // fn index_owned_reversed(&self, index: &Symbol) -> Option<BitVec> {
-        //     match self {
-        //         Node::Symbol(symbol) => {
-        //             if symbol == index {
-        //                 Some(BitVec::new())
-        //             } else {
-        //                 None
-        //             }
-        //         }
-        //         Node::Branch { one, zero } => zero
-        //             .as_ref()
-        //             .index_owned_reversed(index)
-        //             .map(|bits| {
-        //                 let mut bits = bits;
-        //                 bits.push(false);
-        //                 bits
-        //             })
-        //             .or_else(|| {
-        //                 one.as_ref().index_owned_reversed(index).map(|bits| {
-        //                     let mut bits = bits;
-        //                     bits.push(true);
-        //                     bits
-        //                 })
-        //             }),
-        //     }
-        // }
-        // decode bits
-        fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
-            let mut result: Vec<&Symbol> = Vec::new();
-            self.decode_helper(self, &mut bits.iter(), &mut result)?;
-            Ok(result.into_iter())
-        }
-        fn decode_helper<'a, 'b, Bits>(
-            &'a self,
-            walk: &'a Self,
-            bits: &mut Bits,
-            reversed_symbols: &mut Vec<&'a Symbol>,
-        ) -> Result<(), usize>
-        where
-            Bits: Iterator<Item = BitRef<'b>> + ExactSizeIterator,
-        {
-            match (walk, bits.len()) {
-                (Node::Symbol(symbol), 0) => {
-                    reversed_symbols.push(symbol);
-                    Ok(())
-                }
-                (Node::Symbol(symbol), ..) => {
-                    reversed_symbols.push(symbol);
-                    self.decode_helper(self, bits, reversed_symbols)
-                }
-                (Node::Branch { .. }, 0) => Err(0),
-                (Node::Branch { zero, one }, ..) => match bits.next() {
-                    Some(bit) => self
-                        .decode_helper(if *bit { one } else { zero }, bits, reversed_symbols)
-                        .map_err(|pos| pos + 1),
-                    None => Err(0),
-                },
-            }
-        }
     }
     impl<Symbol> Node<Option<Symbol>>
     where

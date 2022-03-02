@@ -266,36 +266,9 @@ mod huffman {
     {
         /// Returns the path to shallowest occurence of given symbol in bits
         fn index_owned(&self, index: &Symbol) -> Option<BitVec> {
-            let mut code = self.index_owned_reversed(index)?;
-            code.reverse();
-            Some(code)
-        }
-
-        fn index_owned_reversed(&self, index: &Symbol) -> Option<BitVec> {
-            // match self {
-            //     Node::Symbol(symbol) => {
-            //         if symbol == index {
-            //             Some(BitVec::new())
-            //         } else {
-            //             None
-            //         }
-            //     }
-            //     Node::Branch { one, zero } => zero
-            //         .as_ref()
-            //         .index_owned_reversed(index)
-            //         .map(|bits| {
-            //             let mut bits = bits;
-            //             bits.push(false);
-            //             bits
-            //         })
-            //         .or_else(|| {
-            //             one.as_ref().index_owned_reversed(index).map(|bits| {
-            //                 let mut bits = bits;
-            //                 bits.push(true);
-            //                 bits
-            //             })
-            //         }),
-            // }
+            // let mut code = self.index_owned_reversed(index)?;
+            // code.reverse();
+            // Some(code)
             let mut stack: Vec<(BitVec, &Node<Symbol>)> = vec![(BitVec::new(), self)];
             while let Some((code, node)) = stack.pop() {
                 match node {
@@ -318,6 +291,33 @@ mod huffman {
             }
             None
         }
+
+        // fn index_owned_reversed(&self, index: &Symbol) -> Option<BitVec> {
+        //     match self {
+        //         Node::Symbol(symbol) => {
+        //             if symbol == index {
+        //                 Some(BitVec::new())
+        //             } else {
+        //                 None
+        //             }
+        //         }
+        //         Node::Branch { one, zero } => zero
+        //             .as_ref()
+        //             .index_owned_reversed(index)
+        //             .map(|bits| {
+        //                 let mut bits = bits;
+        //                 bits.push(false);
+        //                 bits
+        //             })
+        //             .or_else(|| {
+        //                 one.as_ref().index_owned_reversed(index).map(|bits| {
+        //                     let mut bits = bits;
+        //                     bits.push(true);
+        //                     bits
+        //                 })
+        //             }),
+        //     }
+        // }
         // decode bits
         fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
             let mut result: Vec<&Symbol> = Vec::new();
@@ -933,7 +933,7 @@ fn main() -> Result<(), Error> {
                     });
                 println!(
                     "{}",
-                    decoded?.fold(String::new(), |accm, symbol| accm + symbol)
+                    decoded?.fold(String::new(), |accm, symbol| accm + " " + symbol)
                 );
             }
             Ok(())

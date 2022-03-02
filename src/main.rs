@@ -272,30 +272,51 @@ mod huffman {
         }
 
         fn index_owned_reversed(&self, index: &Symbol) -> Option<BitVec> {
-            match self {
-                Node::Symbol(symbol) => {
-                    if symbol == index {
-                        Some(BitVec::new())
-                    } else {
-                        None
+            // match self {
+            //     Node::Symbol(symbol) => {
+            //         if symbol == index {
+            //             Some(BitVec::new())
+            //         } else {
+            //             None
+            //         }
+            //     }
+            //     Node::Branch { one, zero } => zero
+            //         .as_ref()
+            //         .index_owned_reversed(index)
+            //         .map(|bits| {
+            //             let mut bits = bits;
+            //             bits.push(false);
+            //             bits
+            //         })
+            //         .or_else(|| {
+            //             one.as_ref().index_owned_reversed(index).map(|bits| {
+            //                 let mut bits = bits;
+            //                 bits.push(true);
+            //                 bits
+            //             })
+            //         }),
+            // }
+            let mut stack: Vec<(BitVec, &Node<Symbol>)> = vec![(BitVec::new(), self)];
+            while let Some((code, node)) = stack.pop() {
+                match node {
+                    Node::Symbol(symbol) => {
+                        if symbol == index {
+                            return Some(code);
+                        } else {
+                            continue;
+                        }
+                    }
+                    Node::Branch { one, zero } => {
+                        let mut code_zero = code.clone();
+                        code_zero.push(false);
+                        stack.push((code_zero, zero));
+                        let mut code_one = code;
+                        code_one.push(true);
+                        stack.push((code_one, one));
                     }
                 }
-                Node::Branch { one, zero } => zero
-                    .as_ref()
-                    .index_owned_reversed(index)
-                    .map(|bits| {
-                        let mut bits = bits;
-                        bits.push(false);
-                        bits
-                    })
-                    .or_else(|| {
-                        one.as_ref().index_owned_reversed(index).map(|bits| {
-                            let mut bits = bits;
-                            bits.push(true);
-                            bits
-                        })
-                    }),
             }
+            None
         }
         // decode bits
         fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
@@ -611,16 +632,23 @@ mod huffman {
 
             /// view smallest symbol in deepest nodes
             fn deepest(&self) -> &Symbol {
-                fn helper<Symbol>(node: &Node<Symbol>) -> &Symbol
-                where
-                    Symbol: Ord,
-                {
-                    match &node {
-                        Node::Symbol(symbol) => symbol,
-                        Node::Branch { one, .. } => helper(one),
+                // fn helper<Symbol>(node: &Node<Symbol>) -> &Symbol
+                // where
+                //     Symbol: Ord,
+                // {
+                //     match &node {
+                //         Node::Symbol(symbol) => symbol,
+                //         Node::Branch { one, .. } => helper(one),
+                //     }
+                // }
+                // helper(&self.inner);
+                let mut node = &self.inner;
+                loop {
+                    match node.as_ref() {
+                        Node::Symbol(symbol) => return symbol,
+                        Node::Branch { one, .. } => node = one,
                     }
                 }
-                helper(&self.inner)
             }
         }
         impl<Symbol> Ord for Root<Symbol>

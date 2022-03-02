@@ -1,12 +1,12 @@
+use bitvec::vec::BitVec;
 use std::cmp::Ord;
 use std::collections::HashMap;
 use std::io::{BufRead, BufWriter, Read, Write};
-use std::str::FromStr;
 use std::*;
 
 mod util {
-    use bitvec::vec::BitVec;
-    use std::{collections::HashMap, hash::Hash};
+    use bitvec::{slice::BitSlice, vec::BitVec};
+    use std::{collections::HashMap, hash::Hash, panic, str::FromStr};
 
     /// count occurrences of each word
     pub fn count_occurrences<I, T>(words: &mut I) -> HashMap<T, usize>
@@ -24,12 +24,34 @@ mod util {
         words_occurrences
     }
 
-    pub fn format_bits(bits: &BitVec) -> String {
+    /// BitVec to String of '0's and '1's
+    pub fn format_bits(bits: &BitSlice) -> String {
         let mut result = String::new();
         for bit in bits.iter() {
             result.push(if *bit { '1' } else { '0' });
         }
         result
+    }
+
+    pub struct Wrap<T> {
+        pub inner: T,
+    }
+
+    impl FromStr for Wrap<BitVec> {
+        type Err = usize;
+        fn from_str(s: &str) -> Result<Self, Self::Err> {
+            let mut bits: BitVec = BitVec::new();
+            for (position, byte) in s.bytes().enumerate() {
+                match byte {
+                    b'0' => bits.push(false),
+                    b'1' => bits.push(true),
+                    _ => {
+                        return Err(position);
+                    }
+                }
+            }
+            Ok(Wrap { inner: bits })
+        }
     }
 }
 
@@ -96,17 +118,13 @@ struct Encoding {
 }
 
 mod huffman {
-    use crate::util;
-    use bitvec::vec::BitVec;
-    use std::fmt::{Debug, Display};
-
+    use bitvec::{slice::BitSlice, vec::BitVec};
     use std::{
-        cmp::{Ord, Ordering, PartialEq, PartialOrd},
-        collections::{HashMap, VecDeque},
-        hash::Hash,
-        ops::Index,
+        fmt::Debug,
+        mem,
+        ops::{Index, IndexMut},
     };
-    /// represents the Huffman coding for symbols
+    /// represents the Huffman Code for symbols
     #[derive(Debug)]
     pub struct Tree<Symbol: Ord> {
         inner: Node<Symbol>,
@@ -115,209 +133,69 @@ mod huffman {
     where
         Symbol: Ord,
     {
-        /// creates Canonical Huffman tree from HashMap of symbol to it's occurence
-        /// returns None at empty input
-        pub fn new<Map>(symbols_and_their_occurence: Map) -> Option<Self>
-        where
-            Map: Iterator<Item = (Symbol, usize)>,
-        {
-            // create nodes and sort them by occurence
-            let mut leaves = symbols_and_their_occurence
-                .map(|(symbol, occurence)| Root::new(occurence, symbol))
-                .collect::<Vec<Root<Symbol>>>();
-            leaves.sort_unstable();
-            // prepare two queue, one filled with sorted nodes
-            let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
-            let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
-
-            loop {
-                match (
-                    Root::pop_rarer(&mut leaves, &mut branches),
-                    Root::pop_rarer(&mut leaves, &mut branches),
-                ) {
-                    // pop the rarest two roots from the front of two queues and merge them ...
-                    (Some(node0), Some(node1)) => branches.push_front(Root::merge(node0, node1)),
-                    // ... until there is only one root
-                    (Some(node), None) | (None, Some(node)) => {
-                        return Some(Tree { inner: node.inner })
-                    }
-                    (None, None) => return None,
-                }
-            }
-        }
-
-        /// count occurence of each symbol in givin symbol sequence and construct Huffman tree
-        pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
-        where
-            I: Iterator<Item = Symbol>,
-            Symbol: Hash,
-        {
-            Self::new(util::count_occurrences(sequence).into_iter())
-        }
-        /// format Hufftree to string with each word and corresponding encoding
-        /// Each word-encoding relation is newwline seperated,
-        /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
-        pub fn codebook_tsv(&self) -> String
-        where
-            Symbol: Display,
-        {
-            fn records<Symbol>(code: String, current: &Node<Symbol>) -> String
-            where
-                Symbol: Display + Ord,
-            {
-                match current {
-                    Node::Symbol(symbol) => format!("{}\t{}", symbol, code),
-                    Node::Merged { shallower, deeper } => {
-                        format!(
-                            "{}\n{}",
-                            records(format!("{}0", code), shallower),
-                            records(format!("{}1", code), deeper)
-                        )
-                    }
-                }
-            }
-            format!("Symbol\tCode\n{}", records(String::new(), &self.inner))
-        }
-
-        /// encode a single symbol
-        pub fn encode(&self, symbol: &Symbol) -> Option<BitVec> {
-            self.inner.index_owned(symbol)
-        }
-
-        /// encode symbol sequence
-        pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
-        where
-            I: Iterator<Item = Symbol>,
-        {
-            let mut result: BitVec = BitVec::new();
-            for (i, symbol) in symbols.enumerate() {
-                let mut code = self.encode(&symbol).ok_or(i)?;
-                result.append(&mut code);
-            }
-            Ok(result)
-        }
-    }
-
-    #[derive(Debug)]
-    /// associates a symbol and it's occurence
-    struct Root<Symbol>
-    where
-        Symbol: Ord,
-    {
-        /// occurence of the symbol in given sequence, or a sum of childrens
-        occurence: usize,
-
-        /// depth of the tree
-        depth: usize,
-
-        /// a symbol to be encoded
-        inner: Node<Symbol>,
-    }
-    impl<Symbol> Root<Symbol>
-    where
-        Symbol: Ord,
-    {
-        fn new(occurence: usize, symbol: Symbol) -> Self {
-            Root {
-                occurence,
-                depth: 0,
+        fn new(symbol: Symbol) -> Self {
+            Tree {
                 inner: Node::Symbol(symbol),
             }
         }
 
-        /// merge two roots, combinging their occurences
-        /// if the depth of two root are the same,
-        /// then move the root with smaller deepest node to the `deeper` field
-        fn merge(root0: Self, root1: Self) -> Self {
-            let (shallower, deeper) = match Ord::cmp(&root0.depth, &root1.depth) {
-                Ordering::Less => (root0, root1),
-                Ordering::Greater => (root1, root0),
-                Ordering::Equal => {
-                    if root0.inner.deepest() <= root1.inner.deepest() {
-                        (root0, root1)
-                    } else {
-                        (root1, root0)
-                    }
-                }
-            };
-            Root {
-                occurence: shallower.occurence + deeper.occurence,
-                depth: deeper.depth + 1,
-                inner: Node::Merged {
-                    shallower: Box::new(shallower.inner),
-                    deeper: Box::new(deeper.inner),
+        fn extend(zero: Self, one: Self) -> Self {
+            Tree {
+                inner: Node::Branch {
+                    zero: Box::new(zero.inner),
+                    one: Box::new(one.inner),
                 },
             }
         }
+    }
+    impl<Symbol> Tree<Option<Symbol>>
+    where
+        Symbol: Ord,
+    {
+        /// updates symbol to node in tree representing the given code
+        /// # Returns
+        /// * `None` - successfully updated and the updated node was `None`
+        /// * `Some(foo)` - successfully updated and the updated node was `Some(foo)`
+        /// * `Some(symbol)` - the given code is a prefix of other code
+        /// * `Some(symbol)` - other code is a prefix of the given code
+        pub fn update(&mut self, code: &BitSlice, symbol: Symbol) -> Option<Symbol> {
+            self.inner.update(code, symbol)
+        }
 
-        /// pop the rarer element at the front of two queues
-        fn pop_rarer(queue0: &mut VecDeque<Self>, queue1: &mut VecDeque<Self>) -> Option<Self> {
-            match (queue0.front(), queue1.front()) {
-                (Some(node0), Some(node1)) => {
-                    if node0.occurence <= node1.occurence {
-                        queue0.pop_front()
-                    } else {
-                        queue1.pop_front()
-                    }
-                }
-                (Some(_), None) => queue0.pop_front(),
-                (_, _) => queue1.pop_front(),
-            }
+        /// Converts Node<Option<Symbol>> to Node<Symbol>.
+        /// Returns the given node unchanged if there is any None inside.
+        pub fn harden(self) -> Result<Tree<Symbol>, Self> {
+            Ok(Tree {
+                inner: self.inner.harden().map_err(|inner| Tree { inner })?,
+            })
         }
     }
-    impl<Symbol> Ord for Root<Symbol>
+    impl<Symbol> Index<&BitSlice> for Tree<Symbol>
     where
         Symbol: Ord,
     {
-        fn cmp(&self, other: &Self) -> Ordering {
-            match Ord::cmp(&self.occurence, &other.occurence) {
-                Ordering::Equal => Ord::cmp(self.inner.deepest(), other.inner.deepest()),
-                ord => ord,
-            }
+        type Output = Symbol;
+        fn index(&self, index: &BitSlice) -> &Self::Output {
+            &self.inner[index]
         }
     }
-    impl<Symbol> PartialOrd for Root<Symbol>
-    where
-        Symbol: Ord,
-    {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            Some(self.cmp(other))
-        }
-    }
-    impl<Symbol> PartialEq for Root<Symbol>
-    where
-        Symbol: Ord,
-    {
-        fn eq(&self, other: &Self) -> bool {
-            matches!(self.cmp(other), Ordering::Equal)
-        }
-    }
-    impl<Symbol> Eq for Root<Symbol> where Symbol: Ord {}
 
-    ///  used at construction of encoding
+    /// internal representationof Huffman tree
     #[derive(Debug)]
     enum Node<Symbol>
     where
         Symbol: Ord,
     {
         Symbol(Symbol),
-        Merged {
-            shallower: Box<Node<Symbol>>,
-            deeper: Box<Node<Symbol>>,
+        Branch {
+            zero: Box<Node<Symbol>>,
+            one: Box<Node<Symbol>>,
         },
     }
     impl<Symbol> Node<Symbol>
     where
         Symbol: Ord,
     {
-        /// view smallest symbol in deepest nodes
-        fn deepest(&self) -> &Symbol {
-            match self {
-                Node::Symbol(symbol) => symbol,
-                Node::Merged { deeper, .. } => deeper.deepest(),
-            }
-        }
-
         fn index_owned(&self, index: &Symbol) -> Option<BitVec> {
             let mut code = self.index_owned_reversed(index)?;
             code.reverse();
@@ -333,7 +211,7 @@ mod huffman {
                         None
                     }
                 }
-                Node::Merged { deeper, shallower } => shallower
+                Node::Branch { one, zero } => zero
                     .as_ref()
                     .index_owned_reversed(index)
                     .map(|bits| {
@@ -342,7 +220,7 @@ mod huffman {
                         bits
                     })
                     .or_else(|| {
-                        deeper.as_ref().index_owned_reversed(index).map(|bits| {
+                        one.as_ref().index_owned_reversed(index).map(|bits| {
                             let mut bits = bits;
                             bits.push(true);
                             bits
@@ -351,15 +229,298 @@ mod huffman {
             }
         }
     }
-    // impl<Symbol> Index<&Symbol> for Node<Symbol>
-    // where
-    //     Symbol: Ord,
-    // {
-    //     type Output = Option<BitVec>;
-    //     fn index(&self, index: &Symbol) -> &Self::Output {
-    //         &self.index_return_owned(index)
-    //     }
-    // }
+    impl<Symbol> Node<Option<Symbol>>
+    where
+        Symbol: Ord,
+    {
+        /// updates symbol to node in tree representing the given code
+        /// # Returns
+        /// * `None` - successfully updated and the updated node was `None`
+        /// * `Some(foo)` - successfully updated and the updated node was `Some(foo)`
+        /// * `Some(symbol)` - the given code is a prefix of other code
+        /// * `Some(symbol)` - other code is a prefix of the given code
+        fn update(&mut self, code: &BitSlice, symbol: Symbol) -> Option<Symbol> {
+            match (self, code.split_first()) {
+                (Node::Symbol(location), None) => {
+                    let old = mem::take(location);
+                    *location = Some(symbol);
+                    old
+                }
+                (location @ Node::Symbol(None), Some(_)) => {
+                    *location = Node::Branch {
+                        one: Box::new(Node::Symbol(None)),
+                        zero: Box::new(Node::Symbol(None)),
+                    };
+                    location.update(code, symbol)
+                }
+                (Node::Symbol(Some(_)), Some(_)) | (Node::Branch { .. }, None) => Some(symbol),
+                (Node::Branch { zero, one }, Some((bit, index))) => {
+                    if *bit {
+                        one.update(index, symbol)
+                    } else {
+                        zero.update(index, symbol)
+                    }
+                }
+            }
+        }
+
+        /// Converts Node<Option<Symbol>> to Node<Symbol>.
+        /// Returns the given node unchanged if there is any None inside.
+        fn harden(self) -> Result<Node<Symbol>, Self> {
+            match self {
+                Node::Symbol(Some(symbol)) => Ok(Node::Symbol(symbol)),
+                node @ Node::Symbol(None) => Err(node),
+                Node::Branch { zero, one } => Ok(Node::Branch {
+                    zero: Box::new((*zero).harden()?),
+                    one: Box::new((*one).harden()?),
+                }),
+            }
+        }
+    }
+    impl<Symbol> Index<&BitSlice> for Node<Symbol>
+    where
+        Symbol: Ord,
+    {
+        type Output = Symbol;
+        fn index(&self, index: &BitSlice) -> &Self::Output {
+            match (self, index.split_first()) {
+                (Node::Symbol(symbol), None) => symbol,
+                (Node::Branch { zero, one }, Some((bit, index))) => {
+                    if *bit {
+                        one.index(index)
+                    } else {
+                        zero.index(index)
+                    }
+                }
+                (_, _) => panic!("Out of bounds access"),
+            }
+        }
+    }
+    /// Canonical Huffman
+    pub mod canonical {
+        use super::Node;
+        use crate::util;
+        use bitvec::{slice::BitSlice, vec::BitVec};
+        use std::{
+            cmp::{Ord, Ordering, PartialEq, PartialOrd},
+            collections::VecDeque,
+            fmt::Display,
+            hash::Hash,
+            ops::Index,
+        };
+        /// represents the Canonical Huffman Code for symbols
+        #[derive(Debug)]
+        pub struct Tree<Symbol: Ord> {
+            inner: Node<Symbol>,
+        }
+        impl<Symbol> Tree<Symbol>
+        where
+            Symbol: Ord,
+        {
+            /// creates Canonical Huffman tree from HashMap of symbol to it's occurence
+            /// returns None at empty input
+            pub fn new<Map>(symbols_and_their_occurence: Map) -> Option<Self>
+            where
+                Map: Iterator<Item = (Symbol, usize)>,
+            {
+                // create nodes and sort them by occurence
+                let mut leaves = symbols_and_their_occurence
+                    .map(|(symbol, occurence)| Root::new(occurence, symbol))
+                    .collect::<Vec<Root<Symbol>>>();
+                leaves.sort_unstable();
+                // prepare two queue, one filled with sorted nodes
+                let mut leaves: VecDeque<Root<Symbol>> = leaves.into();
+                let mut branches: VecDeque<Root<Symbol>> = VecDeque::new();
+
+                loop {
+                    match (
+                        Root::pop_rarer(&mut leaves, &mut branches),
+                        Root::pop_rarer(&mut leaves, &mut branches),
+                    ) {
+                        // pop the rarest two roots from the front of two queues and merge them ...
+                        (Some(node0), Some(node1)) => {
+                            branches.push_front(Root::merge(node0, node1))
+                        }
+                        // ... until there is only one root
+                        (Some(node), None) | (None, Some(node)) => {
+                            return Some(Tree { inner: node.inner })
+                        }
+                        (None, None) => return None,
+                    }
+                }
+            }
+
+            /// count occurence of each symbol in givin symbol sequence and construct Huffman tree
+            pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
+            where
+                I: Iterator<Item = Symbol>,
+                Symbol: Hash,
+            {
+                Self::new(util::count_occurrences(sequence).into_iter())
+            }
+            /// format Hufftree to string with each word and corresponding encoding
+            /// Each word-encoding relation is newwline seperated,
+            /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
+            pub fn codebook_tsv(&self) -> String
+            where
+                Symbol: Display,
+            {
+                fn records<Symbol>(code: String, current: &Node<Symbol>) -> String
+                where
+                    Symbol: Display + Ord,
+                {
+                    match current {
+                        Node::Symbol(symbol) => format!("{}\t{}", symbol, code),
+                        Node::Branch { zero, one } => {
+                            format!(
+                                "{}\n{}",
+                                records(format!("{}0", code), zero),
+                                records(format!("{}1", code), one)
+                            )
+                        }
+                    }
+                }
+                format!("Symbol\tCode\n{}", records(String::new(), &self.inner))
+            }
+
+            /// encode a single symbol
+            pub fn encode(&self, symbol: &Symbol) -> Option<BitVec> {
+                self.inner.index_owned(symbol)
+            }
+
+            /// encode symbol sequence
+            pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
+            where
+                I: Iterator<Item = Symbol>,
+            {
+                let mut result: BitVec = BitVec::new();
+                for (i, symbol) in symbols.enumerate() {
+                    let mut code = self.encode(&symbol).ok_or(i)?;
+                    result.append(&mut code);
+                }
+                Ok(result)
+            }
+        }
+        impl<Symbol> Index<&BitSlice> for Tree<Symbol>
+        where
+            Symbol: Ord,
+        {
+            type Output = Symbol;
+            fn index(&self, index: &BitSlice) -> &Self::Output {
+                &self.inner[index]
+            }
+        }
+
+        /// associates a symbol and it's occurence
+        #[derive(Debug)]
+        struct Root<Symbol>
+        where
+            Symbol: Ord,
+        {
+            /// occurence of the symbol in given sequence, or a sum of childrens
+            occurence: usize,
+
+            /// depth of the tree
+            depth: usize,
+
+            /// a symbol to be encoded
+            inner: Node<Symbol>,
+        }
+        impl<Symbol> Root<Symbol>
+        where
+            Symbol: Ord,
+        {
+            pub fn new(occurence: usize, symbol: Symbol) -> Self {
+                Root {
+                    occurence,
+                    depth: 0,
+                    inner: Node::Symbol(symbol),
+                }
+            }
+
+            /// merge two roots, combinging their occurences
+            /// if the depth of two root are the same,
+            /// then move the root with smaller deepest node to the `one` field
+            pub fn merge(root0: Self, root1: Self) -> Self {
+                let (shallower, one) = match Ord::cmp(&root0.depth, &root1.depth) {
+                    Ordering::Less => (root0, root1),
+                    Ordering::Greater => (root1, root0),
+                    Ordering::Equal => {
+                        if root0.deepest() <= root1.deepest() {
+                            (root0, root1)
+                        } else {
+                            (root1, root0)
+                        }
+                    }
+                };
+                Root {
+                    occurence: shallower.occurence + one.occurence,
+                    depth: one.depth + 1,
+                    inner: Node::Branch {
+                        zero: Box::new(shallower.inner),
+                        one: Box::new(one.inner),
+                    },
+                }
+            }
+
+            /// pop the rarer element at the front of two queues
+            fn pop_rarer(queue0: &mut VecDeque<Self>, queue1: &mut VecDeque<Self>) -> Option<Self> {
+                match (queue0.front(), queue1.front()) {
+                    (Some(node0), Some(node1)) => {
+                        if node0.occurence <= node1.occurence {
+                            queue0.pop_front()
+                        } else {
+                            queue1.pop_front()
+                        }
+                    }
+                    (Some(_), None) => queue0.pop_front(),
+                    (_, _) => queue1.pop_front(),
+                }
+            }
+
+            /// view smallest symbol in deepest nodes
+            fn deepest(&self) -> &Symbol {
+                fn helper<Symbol>(node: &Node<Symbol>) -> &Symbol
+                where
+                    Symbol: Ord,
+                {
+                    match &node {
+                        Node::Symbol(symbol) => symbol,
+                        Node::Branch { one, .. } => helper(one),
+                    }
+                }
+                helper(&self.inner)
+            }
+        }
+        impl<Symbol> Ord for Root<Symbol>
+        where
+            Symbol: Ord,
+        {
+            fn cmp(&self, other: &Self) -> Ordering {
+                match Ord::cmp(&self.occurence, &other.occurence) {
+                    Ordering::Equal => Ord::cmp(self.deepest(), other.deepest()),
+                    ord => ord,
+                }
+            }
+        }
+        impl<Symbol> PartialOrd for Root<Symbol>
+        where
+            Symbol: Ord,
+        {
+            fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+                Some(self.cmp(other))
+            }
+        }
+        impl<Symbol> PartialEq for Root<Symbol>
+        where
+            Symbol: Ord,
+        {
+            fn eq(&self, other: &Self) -> bool {
+                matches!(self.cmp(other), Ordering::Equal)
+            }
+        }
+        impl<Symbol> Eq for Root<Symbol> where Symbol: Ord {}
+    }
 }
 
 impl Encoding {
@@ -513,7 +674,7 @@ enum Mode {
 }
 #[derive(Debug, Parser)]
 struct Encode {
-    #[clap(long, short = 'b', arg_enum, multiple_occurrences(true))]
+    #[clap(long, short = 'b', arg_enum)]
     /// codebook output format
     codebook_format: CodebookFormat,
 }
@@ -536,7 +697,7 @@ impl Cli {
             Cli::command()
                 .error(
                     clap::ErrorKind::MissingRequiredArgument,
-                    "Huffman only accepts string from stdin.",
+                    "huffman only accepts string from stdin.",
                 )
                 .exit();
             // return Err(Error::NoStdin);
@@ -574,8 +735,8 @@ fn main() -> Result<(), Error> {
             };
             let words = || input.split_whitespace();
             // derive the huffman encodings of words as a tree
-            let huffman_encodings: huffman::Tree<&str> =
-                huffman::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
+            let huffman_encodings: huffman::canonical::Tree<&str> =
+                huffman::canonical::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
 
             // print codebook
             match codebook_format {
@@ -602,7 +763,7 @@ fn main() -> Result<(), Error> {
             let mut trailing = false;
 
             // record encodings
-            let mut dict: Vec<(usize, HuffCode, String)> = Vec::new();
+            let mut dict: Vec<(usize, BitVec, String)> = Vec::new();
             for (linenum, line) in &mut lines {
                 let line = line.map_err(Error::Io)?;
                 // encoding definition part starts after and ends before empty line
@@ -625,7 +786,7 @@ fn main() -> Result<(), Error> {
                             is: MisformattedDefinition,
                         }));
                     }
-                    Some((word, encoding)) => {
+                    Some((word, code)) => {
                         let word = word.to_string();
                         // check for duplicate word
                         if dict.iter().any(|(_, _, w)| w == &word) {
@@ -637,13 +798,16 @@ fn main() -> Result<(), Error> {
                         }
                         dict.push((
                             linenum,
-                            (HuffCode::from_str(encoding).map_err(|err| {
-                                Error::InvalidEncodingDefinition(IsAt {
-                                    line: linenum,
-                                    character: word.len() + 1,
-                                    is: InvalidEncoding(err),
-                                })
-                            }))?,
+                            (match code.parse::<util::Wrap<BitVec>>() {
+                                Err(position) => {
+                                    return Err(Error::InvalidEncodingDefinition(IsAt {
+                                        line: linenum,
+                                        character: word.len() + 1 + position,
+                                        is: InvalidEncoding(ParseHuffCodeError::NonBinary),
+                                    }));
+                                }
+                                Ok(bits) => bits.inner,
+                            }),
                             word,
                         ))
                     }
@@ -661,12 +825,9 @@ fn main() -> Result<(), Error> {
                 None => {
                     return Err(Error::NoStdin);
                 }
-                Some((linenum, encoding, word)) => {
-                    if encoding == expected {
-                        Encoding {
-                            common: Vec::new(),
-                            rarest: word,
-                        }
+                Some((linenum, code, word)) => {
+                    if code.not_any() {
+                        unimplemented!()
                     } else {
                         return Err(Error::InvalidEncodingDefinition(IsAt {
                             line: linenum,
@@ -676,66 +837,66 @@ fn main() -> Result<(), Error> {
                     }
                 }
             };
-            for (linenum, encoding, word) in dict {
-                expected.init_length += if encoding.last { 0 } else { 1 };
-                expected.last = encoding.last;
-                if encoding == expected {
-                    encodings.common.push(encodings.rarest);
-                    encodings.rarest = word;
-                } else {
-                    return Err(Error::InvalidEncodingDefinition(IsAt {
-                        line: linenum,
-                        character: 0,
-                        is: InsufficientDefinition,
-                    }));
-                }
-            }
+            // for (linenum, encoding, word) in dict {
+            //     expected.init_length += if encoding.last { 0 } else { 1 };
+            //     expected.last = encoding.last;
+            //     if encoding == expected {
+            //         encodings.common.push(encodings.rarest);
+            //         encodings.rarest = word;
+            //     } else {
+            //         return Err(Error::InvalidEncodingDefinition(IsAt {
+            //             line: linenum,
+            //             character: 0,
+            //             is: InsufficientDefinition,
+            //         }));
+            //     }
+            // }
 
-            // decode string
-            for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::Io)?;
-                if line.is_empty() {
-                    continue;
-                };
-                let mut decoded: String = String::new();
-                let mut ones: usize = 0;
-                for (pos, &byte) in line.as_bytes().iter().enumerate() {
-                    if encodings.common.len() <= ones {
-                        decoded.push_str(&encodings.rarest);
-                        decoded.push('\n');
-                        ones = 0;
-                    } else {
-                        match byte {
-                            b'1' => ones += 1,
-                            b'0' => {
-                                decoded
-                                    .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
-                                    "ones should have been resetted before it gets out of bounds",
-                                ))?);
-                                decoded.push('\n');
-                                ones = 0;
-                            }
-                            _ => {
-                                return Err(Error::InvalidCodeString(IsAt {
-                                    line: linenum,
-                                    character: pos,
-                                    is: CodeStringError::NonBinary,
-                                }));
-                            }
-                        }
-                    }
-                }
+            // // decode string
+            // for (linenum, line) in &mut lines {
+            //     let line = line.map_err(Error::Io)?;
+            //     if line.is_empty() {
+            //         continue;
+            //     };
+            //     let mut decoded: String = String::new();
+            //     let mut ones: usize = 0;
+            //     for (pos, &byte) in line.as_bytes().iter().enumerate() {
+            //         if encodings.common.len() <= ones {
+            //             decoded.push_str(&encodings.rarest);
+            //             decoded.push('\n');
+            //             ones = 0;
+            //         } else {
+            //             match byte {
+            //                 b'1' => ones += 1,
+            //                 b'0' => {
+            //                     decoded
+            //                         .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
+            //                         "ones should have been resetted before it gets out of bounds",
+            //                     ))?);
+            //                     decoded.push('\n');
+            //                     ones = 0;
+            //                 }
+            //                 _ => {
+            //                     return Err(Error::InvalidCodeString(IsAt {
+            //                         line: linenum,
+            //                         character: pos,
+            //                         is: CodeStringError::NonBinary,
+            //                     }));
+            //                 }
+            //             }
+            //         }
+            //     }
 
-                // check trailing bits
-                if 0 < ones {
-                    return Err(Error::InvalidCodeString(IsAt {
-                        line: linenum,
-                        character: line.as_bytes().len() - ones,
-                        is: CodeStringError::MalformedBinary,
-                    }));
-                }
-                println!("{}", decoded);
-            }
+            //     // check trailing bits
+            //     if 0 < ones {
+            //         return Err(Error::InvalidCodeString(IsAt {
+            //             line: linenum,
+            //             character: line.as_bytes().len() - ones,
+            //             is: CodeStringError::MalformedBinary,
+            //         }));
+            //     }
+            //     println!("{}", decoded);
+            // }
             Ok(())
         }
     };

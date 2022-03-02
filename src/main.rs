@@ -108,8 +108,8 @@ enum Error {
     NoStdin,
 
     /// something is wrong with encoding definition part of input
-    // InvalidCodeDefinition(Vec<IsAt<CodeDefinitionError>>),
-    InvalidCodeDefinition(IsAt<CodeDefinitionError>),
+    InvalidCodeDefinition(Vec<IsAt<CodeDefinitionError>>),
+    // InvalidCodeDefinition(IsAt<CodeDefinitionError>),
     /// something is wrong with encoded string part of input
     InvalidCodeString(IsAt<CodeStringError>),
 }
@@ -126,7 +126,7 @@ enum CodeDefinitionError {
     DuplicateCodes,
 
     /// there is word missing definition, guessing from defined codes
-    InsufficientDefinition,
+    InsufficientDefinitions(Vec<BitVec>),
     /// code part has something wrong
     InvalidCode(CodeStringError),
 }
@@ -150,8 +150,8 @@ struct Encoding {
 }
 
 mod huffman {
-    use bitvec::{slice::BitSlice, vec::BitVec};
-    use std::{fmt::Debug, mem, ops::Index};
+    use bitvec::{ptr::BitRef, slice::BitSlice, vec::BitVec};
+    use std::{fmt::Debug, iter, mem, ops::Index};
     /// represents the Huffman Code for symbols
     #[derive(Debug)]
     pub struct Tree<Symbol: Ord> {
@@ -174,6 +174,28 @@ mod huffman {
                     one: one.inner,
                 }),
             }
+        }
+        /// encode a single symbol
+        pub fn encode(&self, symbol: &Symbol) -> Option<BitVec> {
+            self.inner.index_owned(symbol)
+        }
+
+        /// encode symbol sequence
+        pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
+        where
+            I: Iterator<Item = Symbol>,
+        {
+            let mut result: BitVec = BitVec::new();
+            for (i, symbol) in symbols.enumerate() {
+                let mut code = self.encode(&symbol).ok_or(i)?;
+                result.append(&mut code);
+            }
+            Ok(result)
+        }
+
+        // decode bits
+        pub fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
+            self.inner.decode(bits)
         }
     }
     impl<Symbol> Index<&BitSlice> for Tree<Symbol>
@@ -273,6 +295,39 @@ mod huffman {
                             bits
                         })
                     }),
+            }
+        }
+        // decode bits
+        fn decode(&self, bits: &BitSlice) -> Result<impl Iterator<Item = &Symbol>, usize> {
+            let mut result: Vec<&Symbol> = Vec::new();
+            self.decode_helper(self, &mut bits.iter(), &mut result)?;
+            Ok(result.into_iter())
+        }
+        fn decode_helper<'a, 'b, Bits>(
+            &'a self,
+            walk: &'a Self,
+            bits: &mut Bits,
+            reversed_symbols: &mut Vec<&'a Symbol>,
+        ) -> Result<(), usize>
+        where
+            Bits: Iterator<Item = BitRef<'b>> + ExactSizeIterator,
+        {
+            match (walk, bits.len()) {
+                (Node::Symbol(symbol), 0) => {
+                    reversed_symbols.push(symbol);
+                    Ok(())
+                }
+                (Node::Symbol(symbol), ..) => {
+                    reversed_symbols.push(symbol);
+                    self.decode_helper(self, bits, reversed_symbols)
+                }
+                (Node::Branch { .. }, 0) => Err(0),
+                (Node::Branch { zero, one }, ..) => match bits.next() {
+                    Some(bit) => self
+                        .decode_helper(if *bit { one } else { zero }, bits, reversed_symbols)
+                        .map_err(|pos| pos + 1),
+                    None => Err(0),
+                },
             }
         }
     }
@@ -702,15 +757,18 @@ fn main() -> Result<(), Error> {
         }
         Mode::Decode(Decode { .. }) => {
             // get lines from stdin, one line at a time
-            let lines = stdin.lines().enumerate();
+            let mut lines = stdin.lines().enumerate();
 
             // skip newlines before encoding definitions
             let mut trailing = false;
 
-            // record encodings
+            // record codes
             // let mut dict: Vec<(usize, BitVec, String)> = Vec::new();
-            let mut codebook: huffman::Intermediate<IsAt<String>> = huffman::Intermediate::new();
-            for (linenum, line) in lines {
+            let mut codebook: huffman::Intermediate<String> = huffman::Intermediate::new();
+            // record errors
+            let mut errors: Vec<IsAt<CodeDefinitionError>> = Vec::new();
+
+            for (linenum, line) in &mut lines {
                 let line = line.map_err(Error::Io)?;
                 // encoding definition part starts after and ends before empty line
                 if line.is_empty() {
@@ -726,140 +784,130 @@ fn main() -> Result<(), Error> {
                 // each encoding definition is tab seperated pair of word and encoding
                 match line.split_once('\t') {
                     None => {
-                        return Err(Error::InvalidCodeDefinition(IsAt {
+                        errors.push(IsAt {
                             line: linenum,
                             character: 0,
                             is: CodeDefinitionError::MisformattedDefinition,
-                        }));
+                        });
+                        continue;
                     }
                     Some((word, code)) => {
+                        if word == "Symbol" && code == "Code" {
+                            continue;
+                        }
                         let code = match code.parse::<util::Wrap<BitVec>>() {
                             Err(position) => {
-                                return Err(Error::InvalidCodeDefinition(IsAt {
+                                errors.push(IsAt {
                                     line: linenum,
                                     character: word.len() + 1 + position,
                                     is: CodeDefinitionError::InvalidCode(
                                         CodeStringError::NonBinary,
                                     ),
-                                }));
+                                });
+                                continue;
                             }
                             Ok(bits) => bits.inner,
                         };
-                        match codebook.update(
-                            &code,
-                            IsAt {
+                        if let Some(old) = codebook.update(&code, word.to_string()) {
+                            errors.push(IsAt {
                                 line: linenum,
                                 character: 0,
-                                is: word.to_string(),
-                            },
-                        ) {
-                            Some(old) => {
-                                return Err(Error::InvalidCodeDefinition(IsAt {
-                                    line: linenum,
-                                    character: 0,
-                                    is: if word == old.is {
-                                        // check for duplicate word
-                                        CodeDefinitionError::DuplicateDefinitions
-                                    } else {
-                                        CodeDefinitionError::InvalidCode(
-                                            CodeStringError::MalformedBinary,
-                                        )
-                                    },
-                                }));
-                            }
-                            None => {
-                                // let codebook =
-                                //     codebook.harden().map_err(|codebook| codebook.missing())?;
-                                unimplemented!()
-                            }
+                                is: if word == old {
+                                    // check for duplicate word
+                                    CodeDefinitionError::DuplicateDefinitions
+                                } else {
+                                    CodeDefinitionError::InvalidCode(
+                                        CodeStringError::MalformedBinary,
+                                    )
+                                },
+                            });
+                            continue;
                         };
                     }
                 }
             }
-            // // validate and convert Hashmap to Encodings
-            // dict.sort_unstable_by(|(_, code0, _), (_, code1, _)| Ord::cmp(code0, code1));
-            // let mut dict = dict.into_iter();
+            // validate and convert Hashmap to Encodings
+            let codebook = codebook.harden().map_err(|codebook| {
+                errors.push(IsAt {
+                    line: 0,
+                    character: 0,
+                    is: CodeDefinitionError::InsufficientDefinitions(
+                        codebook.missing().collect::<Vec<BitVec>>(),
+                    ),
+                });
+                Error::InvalidCodeDefinition(errors)
+            })?;
 
-            // let mut expected: HuffCode = HuffCode {
-            //     init_length: 0,
-            //     last: false,
-            // };
-            // let mut encodings: Encoding = match dict.next() {
-            //     None => {
-            //         return Err(Error::NoStdin);
-            //     }
-            //     Some((linenum, code, word)) => {
-            //         if code.not_any() {
-            //             unimplemented!()
-            //         } else {
-            //             return Err(Error::InvalidEncodingDefinition(IsAt {
-            //                 line: linenum,
-            //                 character: 0,
-            //                 is: InsufficientDefinition,
-            //             }));
-            //         }
-            //     }
-            // };
-            // for (linenum, encoding, word) in dict {
-            //     expected.init_length += if encoding.last { 0 } else { 1 };
-            //     expected.last = encoding.last;
-            //     if encoding == expected {
-            //         encodings.common.push(encodings.rarest);
-            //         encodings.rarest = word;
-            //     } else {
-            //         return Err(Error::InvalidEncodingDefinition(IsAt {
-            //             line: linenum,
-            //             character: 0,
-            //             is: InsufficientDefinition,
-            //         }));
-            //     }
-            // }
+            // decode string
+            for (linenum, line) in &mut lines {
+                let line = line.map_err(Error::Io)?;
+                if line.is_empty() {
+                    continue;
+                };
+                // let decoded = {
+                //     let mut decoded: String = String::new();
+                //     let mut ones: usize = 0;
+                //     for (pos, &byte) in line.as_bytes().iter().enumerate() {
+                //         if encodings.common.len() <= ones {
+                //             decoded.push_str(&encodings.rarest);
+                //             decoded.push('\n');
+                //             ones = 0;
+                //         } else {
+                //             match byte {
+                //                 b'1' => ones += 1,
+                //                 b'0' => {
+                //                     decoded
+                //                     .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
+                //                     "ones should have been resetted before it gets out of bounds",
+                //                 ))?);
+                //                     decoded.push('\n');
+                //                     ones = 0;
+                //                 }
+                //                 _ => {
+                //                     return Err(Error::InvalidCodeString(IsAt {
+                //                         line: linenum,
+                //                         character: pos,
+                //                         is: CodeStringError::NonBinary,
+                //                     }));
+                //                 }
+                //             }
+                //         }
+                //     }
+                // };
 
-            // // decode string
-            // for (linenum, line) in &mut lines {
-            //     let line = line.map_err(Error::Io)?;
-            //     if line.is_empty() {
-            //         continue;
-            //     };
-            //     let mut decoded: String = String::new();
-            //     let mut ones: usize = 0;
-            //     for (pos, &byte) in line.as_bytes().iter().enumerate() {
-            //         if encodings.common.len() <= ones {
-            //             decoded.push_str(&encodings.rarest);
-            //             decoded.push('\n');
-            //             ones = 0;
-            //         } else {
-            //             match byte {
-            //                 b'1' => ones += 1,
-            //                 b'0' => {
-            //                     decoded
-            //                         .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
-            //                         "ones should have been resetted before it gets out of bounds",
-            //                     ))?);
-            //                     decoded.push('\n');
-            //                     ones = 0;
-            //                 }
-            //                 _ => {
-            //                     return Err(Error::InvalidCodeString(IsAt {
-            //                         line: linenum,
-            //                         character: pos,
-            //                         is: CodeStringError::NonBinary,
-            //                     }));
-            //                 }
-            //             }
-            //         }
-            //     }
-
-            //     // check trailing bits
-            //     if 0 < ones {
-            //         return Err(Error::InvalidCodeString(IsAt {
-            //             line: linenum,
-            //             character: line.as_bytes().len() - ones,
-            //             is: CodeStringError::MalformedBinary,
-            //         }));
-            //     }
-            //     println!("{}", decoded);
-            // }
+                // // check trailing bits
+                // if 0 < ones {
+                //     return Err(Error::InvalidCodeString(IsAt {
+                //         line: linenum,
+                //         character: line.as_bytes().len() - ones,
+                //         is: CodeStringError::MalformedBinary,
+                //     }));
+                // }
+                let decoded = codebook
+                    .decode(
+                        line.parse::<util::Wrap<BitVec>>()
+                            .map_err(|position| {
+                                Error::InvalidCodeString(IsAt {
+                                    line: linenum,
+                                    character: position,
+                                    is: CodeStringError::NonBinary,
+                                })
+                            })?
+                            .inner
+                            .as_bitslice(),
+                    )
+                    .map_err(|position| {
+                        Error::InvalidCodeString(IsAt {
+                            line: linenum,
+                            character: position,
+                            is: CodeStringError::MalformedBinary,
+                        })
+                    });
+                println!(
+                    "{}",
+                    decoded?.fold(String::new(), |accm, symbol| accm + symbol)
+                );
+            }
             Ok(())
         }
     };

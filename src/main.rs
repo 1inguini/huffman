@@ -140,15 +140,6 @@ enum CodeStringError {
     MalformedBinary,
 }
 
-// represent the Huffman encoding
-#[derive(Debug, Clone, Default)]
-struct Encoding {
-    /// words with encoding prefixed with index-of-vector replication of 1s and ends in 0
-    common: Vec<String>,
-    /// word with encoding of only 1s
-    rarest: String,
-}
-
 mod huffman {
     use bitvec::{ptr::BitRef, slice::BitSlice, vec::BitVec};
     use std::{fmt::Debug, iter, mem, ops::Index};
@@ -298,9 +289,6 @@ mod huffman {
     {
         /// Returns the path to shallowest occurence of given symbol in bits
         fn index_owned(&self, index: &Symbol) -> Option<BitVec> {
-            // let mut code = self.index_owned_reversed(index)?;
-            // code.reverse();
-            // Some(code)
             let mut stack: Vec<(BitVec, &Node<Symbol>)> = vec![(BitVec::new(), self)];
             while let Some((code, node)) = stack.pop() {
                 match node {
@@ -692,6 +680,9 @@ struct Decode {}
 
 impl Cli {
     fn init() -> Cli {
+        // get arguments
+        let cli = Cli::parse();
+
         // abort when there is no input from stdin
         if atty::is(atty::Stream::Stdin) {
             Cli::command()
@@ -702,8 +693,7 @@ impl Cli {
                 .exit();
             // return Err(Error::NoStdin);
         }
-        // get arguments
-        Cli::parse()
+        cli
     }
 }
 

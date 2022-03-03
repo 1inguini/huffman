@@ -252,11 +252,39 @@ mod huffman {
         /// * `Some(symbol)` - the given code was a prefix of other code
         /// * `Some(symbol)` - other code was a prefix of the given code
         pub fn update(&mut self, code: &BitSlice, symbol: Symbol) -> Option<Symbol> {
-            self.node.update(code, symbol)
+            // self.node.update(code, symbol)
+            match (self.node.as_mut(), code.split_first()) {
+                (Node::Symbol(location), None) => {
+                    let old = mem::take(location);
+                    *location = Some(symbol);
+                    old
+                }
+                (node @ Node::Symbol(None), Some(..)) => {
+                    *node = Node::Branch {
+                        one: Box::new(Node::Symbol(None)),
+                        zero: Box::new(Node::Symbol(None)),
+                    };
+                    self.update(code, symbol)
+                }
+                // other code was a prefix of the given code
+                (Node::Symbol(Some(..)), Some(..)) => Some(symbol),
+                // the given code was a prefix of other code
+                (Node::Branch { .. }, None) => Some(symbol),
+                (Node::Branch { zero, one }, Some((bit, code))) => {
+                    let dummy = Box::new(Node::Symbol(None));
+                    let node: &mut Box<Node<Option<Symbol>>> = if *bit { one } else { zero };
+                    let mut temp: Intermediate<Symbol> = Intermediate {
+                        node: mem::replace(node, dummy),
+                    };
+                    let result = temp.update(code, symbol);
+                    mem::swap(&mut temp.node, node);
+                    result
+                }
+            }
         }
 
-        /// Converts Node<Option<Symbol>> to Node<Symbol>.
-        /// Returns the given node unchanged if there is any None inside.
+        /// Converts `Node<Option<Symbol>>` to `Node<Symbol>`.
+        /// Returns the given node unchanged if there is any `None` inside.
         pub fn harden(self) -> Result<Tree<Symbol>, Self> {
             Ok(Tree {
                 inner: Box::new(self.node.harden().map_err(|node| Intermediate {
@@ -316,37 +344,6 @@ mod huffman {
     where
         Symbol: Ord,
     {
-        /// updates symbol to node in tree representing the given code
-        /// # Returns
-        /// * `None` - successfully updated and the updated node was `None`
-        /// * `Some(foo)` - successfully updated and the updated node was `Some(foo)`
-        /// * `Some(symbol)` - the given code was a prefix of other code
-        /// * `Some(symbol)` - other code was a prefix of the given code
-        fn update(&mut self, code: &BitSlice, symbol: Symbol) -> Option<Symbol> {
-            match (self, code.split_first()) {
-                (Node::Symbol(location), None) => {
-                    let old = mem::take(location);
-                    *location = Some(symbol);
-                    old
-                }
-                (location @ Node::Symbol(None), Some(..)) => {
-                    *location = Node::Branch {
-                        one: Box::new(Node::Symbol(None)),
-                        zero: Box::new(Node::Symbol(None)),
-                    };
-                    location.update(code, symbol)
-                }
-                (Node::Symbol(Some(..)), Some(..)) | (Node::Branch { .. }, None) => Some(symbol),
-                (Node::Branch { zero, one }, Some((bit, index))) => {
-                    if *bit {
-                        one.update(index, symbol)
-                    } else {
-                        zero.update(index, symbol)
-                    }
-                }
-            }
-        }
-
         /// Converts Node<Option<Symbol>> to Node<Symbol>.
         /// Returns the given node unchanged if there is any None inside.
         fn harden(self) -> Result<Node<Symbol>, Self> {
@@ -715,7 +712,7 @@ fn main() -> Result<(), Error> {
     }
 
     // run each subcommands
-    return match args.mode {
+    let result = match args.mode {
         Mode::Encode(Encode { codebook_format }) => {
             // get words from stdin, waits until EOF
             let input = {
@@ -834,45 +831,6 @@ fn main() -> Result<(), Error> {
                 if line.is_empty() {
                     continue;
                 };
-                // let decoded = {
-                //     let mut decoded: String = String::new();
-                //     let mut ones: usize = 0;
-                //     for (pos, &byte) in line.as_bytes().iter().enumerate() {
-                //         if encodings.common.len() <= ones {
-                //             decoded.push_str(&encodings.rarest);
-                //             decoded.push('\n');
-                //             ones = 0;
-                //         } else {
-                //             match byte {
-                //                 b'1' => ones += 1,
-                //                 b'0' => {
-                //                     decoded
-                //                     .push_str(encodings.common.get(ones).ok_or(Error::Unreachable(
-                //                     "ones should have been resetted before it gets out of bounds",
-                //                 ))?);
-                //                     decoded.push('\n');
-                //                     ones = 0;
-                //                 }
-                //                 _ => {
-                //                     return Err(Error::InvalidCodeString(IsAt {
-                //                         line: linenum,
-                //                         character: pos,
-                //                         is: CodeStringError::NonBinary,
-                //                     }));
-                //                 }
-                //             }
-                //         }
-                //     }
-                // };
-
-                // // check trailing bits
-                // if 0 < ones {
-                //     return Err(Error::InvalidCodeString(IsAt {
-                //         line: linenum,
-                //         character: line.as_bytes().len() - ones,
-                //         is: CodeStringError::MalformedBinary,
-                //     }));
-                // }
                 let decoded = codebook
                     .decode(
                         line.parse::<util::Wrap<BitVec>>()
@@ -901,4 +859,6 @@ fn main() -> Result<(), Error> {
             Ok(())
         }
     };
+    stdout.flush().map_err(Error::Io)?;
+    result
 }

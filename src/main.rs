@@ -1,8 +1,12 @@
 use bitvec::vec::BitVec;
-use std::cmp::Ord;
-use std::collections::HashMap;
-use std::io::{BufRead, BufWriter, Read, Write};
-use std::*;
+use std::{
+    cmp::Ord,
+    collections::HashMap,
+    fmt::Display,
+    hash::Hash,
+    io,
+    io::{BufRead, BufWriter, Write},
+};
 use util::IsAt;
 
 mod util {
@@ -466,26 +470,30 @@ mod huffman {
             /// format Hufftree to string with each word and corresponding encoding
             /// Each word-encoding relation is newwline seperated,
             /// and each word-encoding relation is represented by tab seperated pair of word and encoding.
-            pub fn codebook_tsv(&self) -> String
+            pub fn codebook_tsv<D>(&self, display: &D) -> String
             where
-                Symbol: Display,
+                D: Fn(&Symbol) -> String,
             {
-                fn records<Symbol>(code: String, current: &Node<Symbol>) -> String
+                fn records<Symbol, D>(display: &D, code: String, current: &Node<Symbol>) -> String
                 where
-                    Symbol: Display + Ord,
+                    Symbol: Ord,
+                    D: Fn(&Symbol) -> String,
                 {
                     match current {
-                        Node::Symbol(symbol) => format!("{}\t{}", symbol, code),
+                        Node::Symbol(symbol) => format!("{}\t{}", display(symbol), code),
                         Node::Branch { zero, one } => {
                             format!(
                                 "{}\n{}",
-                                records(format!("{}0", code), zero),
-                                records(format!("{}1", code), one)
+                                records(display, format!("{}0", code), zero),
+                                records(display, format!("{}1", code), one)
                             )
                         }
                     }
                 }
-                format!("Symbol\tCode\n{}", records(String::new(), &self.inner))
+                format!(
+                    "Symbol\tCode\n{}",
+                    records(display, String::new(), &self.inner)
+                )
             }
 
             /// encode a single symbol
@@ -655,9 +663,13 @@ enum Mode {
 }
 #[derive(Debug, Parser)]
 struct Encode {
-    #[clap(long, short = 'b', arg_enum)]
     /// codebook output format
+    #[clap(long, short = 'b', arg_enum)]
     codebook_format: CodebookFormat,
+
+    /// read input as words or binary
+    #[clap(long, short = 's', arg_enum)]
+    symbol_type: SymbolType,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum)]
@@ -668,8 +680,18 @@ enum CodebookFormat {
     Tsv,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ArgEnum)]
+enum SymbolType {
+    Bytes,
+    Words,
+}
+
 #[derive(Debug, Parser)]
-struct Decode {}
+struct Decode {
+    /// read input as words or binary
+    #[clap(long, short = 's', arg_enum)]
+    symbol_type: SymbolType,
+}
 
 impl Cli {
     fn init() -> Cli {
@@ -688,11 +710,8 @@ impl Cli {
         }
         cli
     }
-    fn encode<In, Out>(
-        Encode { codebook_format }: Encode,
-        stdin: &mut In,
-        stdout: &mut Out,
-    ) -> Result<(), Error>
+
+    fn encode<In, Out>(config: Encode, stdin: &mut In, stdout: &mut Out) -> Result<(), Error>
     where
         In: BufRead,
         Out: Write,
@@ -703,32 +722,61 @@ impl Cli {
             stdin.read_to_string(&mut input).map_err(Error::Io)?;
             input
         };
-        let words = || input.split_whitespace();
+
+        match config.symbol_type {
+            SymbolType::Words => Cli::encode_generic(
+                config,
+                stdout,
+                |s: &&str| s.to_string(),
+                || input.split_whitespace(),
+            ),
+            SymbolType::Bytes => Cli::encode_generic(
+                config,
+                stdout,
+                |byte| format!("0x{:>02X}", byte),
+                || input.bytes(),
+            ),
+        }
+    }
+
+    fn encode_generic<Out, Symbol, D, I, F>(
+        config: Encode,
+        stdout: &mut Out,
+        display: D,
+        symbols: F,
+    ) -> Result<(), Error>
+    where
+        Out: Write,
+        Symbol: Ord + Hash,
+        D: Fn(&Symbol) -> String,
+        I: Iterator<Item = Symbol>,
+        F: Fn() -> I,
+    {
         // derive the huffman encodings of words as a tree
-        let huffman_encodings: huffman::canonical::Tree<&str> =
-            huffman::canonical::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
+        let huffman_encodings =
+            huffman::canonical::Tree::from_sequence(&mut symbols()).ok_or(Error::NoStdin)?;
 
         // print codebook
-        match codebook_format {
+        match config.codebook_format {
             CodebookFormat::Hide => {}
             CodebookFormat::Tsv => {
-                println!("{}", huffman_encodings.codebook_tsv());
-                println!();
+                writeln!(stdout, "{}", huffman_encodings.codebook_tsv(&display))
+                    .map_err(Error::Io)?;
+                writeln!(stdout).map_err(Error::Io)?;
             }
         }
         // print encoded string
         writeln!(
             stdout,
             "{}",
-            util::format_bits(
-                &huffman_encodings.encode_sequence(&mut words()).map_err(
-                    |_| Error::Unreachable("there shouldn't be words that has no encoding")
-                )?,
-            )
+            util::format_bits(&huffman_encodings.encode_sequence(&mut symbols()).map_err(
+                |_| Error::Unreachable("there shouldn't be words that has no encoding")
+            )?,)
         )
         .map_err(Error::Io)?;
         Ok(())
     }
+
     fn decode<In, Out>(Decode { .. }: Decode, stdin: &mut In, stdout: &mut Out) -> Result<(), Error>
     where
         In: BufRead,
@@ -746,7 +794,6 @@ impl Cli {
         let mut trailing = false;
 
         // record codes
-        // let mut dict: Vec<(usize, BitVec, String)> = Vec::new();
         let mut codebook: huffman::Intermediate<String> = huffman::Intermediate::new();
         // record errors
         let mut errors: Vec<IsAt<CodeDefinitionError>> = Vec::new();

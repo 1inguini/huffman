@@ -141,6 +141,7 @@ enum CodeStringError {
 }
 
 mod huffman {
+    use crate::util;
     use bitvec::{ptr::BitRef, slice::BitSlice, vec::BitVec};
     use std::{fmt::Debug, iter, mem, ops::Index};
     /// represents the Huffman Code for symbols
@@ -287,7 +288,7 @@ mod huffman {
         /// Returns the given node unchanged if there is any `None` inside.
         pub fn harden(&self) -> Option<Tree<&Symbol>> {
             Some(Tree {
-                inner: Box::new(self.node.harden()?),
+                inner: self.node.harden()?,
             })
         }
 
@@ -319,7 +320,6 @@ mod huffman {
             vacant_codes.into_iter()
         }
     }
-
     /// internal representationof Huffman tree
     #[derive(Debug)]
     enum Node<Symbol>
@@ -367,15 +367,17 @@ mod huffman {
     {
         /// Converts Node<Option<Symbol>> to Node<Symbol>.
         /// Returns the given node unchanged if there is any None inside.
-        fn harden(&self) -> Option<Node<&Symbol>> {
-            match self {
-                Node::Symbol(Some(symbol)) => Some(Node::Symbol(symbol)),
-                Node::Symbol(None) => None,
-                Node::Branch { zero, one } => Some(Node::Branch {
-                    zero: Box::new((*zero).harden()?),
-                    one: Box::new((*one).harden()?),
-                }),
-            }
+        fn harden(&self) -> Option<Box<Node<&Symbol>>> {
+            Some(Box::new(match self {
+                Node::Symbol(Some(symbol)) => Node::Symbol(symbol),
+                Node::Symbol(None) => {
+                    return None;
+                }
+                Node::Branch { zero, one } => Node::Branch {
+                    zero: ((zero).harden()?),
+                    one: ((one).harden()?),
+                },
+            }))
         }
     }
     impl<Symbol> Index<&BitSlice> for Node<Symbol>
@@ -686,6 +688,168 @@ impl Cli {
         }
         cli
     }
+    fn encode<In, Out>(
+        Encode { codebook_format }: Encode,
+        stdin: &mut In,
+        stdout: &mut Out,
+    ) -> Result<(), Error>
+    where
+        In: BufRead,
+        Out: Write,
+    {
+        // get words from stdin, waits until EOF
+        let input = {
+            let mut input = String::new();
+            stdin.read_to_string(&mut input).map_err(Error::Io)?;
+            input
+        };
+        let words = || input.split_whitespace();
+        // derive the huffman encodings of words as a tree
+        let huffman_encodings: huffman::canonical::Tree<&str> =
+            huffman::canonical::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
+
+        // print codebook
+        match codebook_format {
+            CodebookFormat::Hide => {}
+            CodebookFormat::Tsv => {
+                println!("{}", huffman_encodings.codebook_tsv());
+                println!();
+            }
+        }
+        // print encoded string
+        writeln!(
+            stdout,
+            "{}",
+            util::format_bits(
+                &huffman_encodings.encode_sequence(&mut words()).map_err(
+                    |_| Error::Unreachable("there shouldn't be words that has no encoding")
+                )?,
+            )
+        )
+        .map_err(Error::Io)?;
+        Ok(())
+    }
+    fn decode<In, Out>(Decode { .. }: Decode, stdin: &mut In, stdout: &mut Out) -> Result<(), Error>
+    where
+        In: BufRead,
+        Out: Write,
+    {
+        macro_rules! println {
+            ($($arg:tt)*) => ({
+                writeln!(stdout, $($arg)*).map_err(Error::Io)?;
+            })
+        }
+        // get lines from stdin, one line at a time
+        let mut lines = stdin.lines().enumerate();
+
+        // skip newlines before encoding definitions
+        let mut trailing = false;
+
+        // record codes
+        // let mut dict: Vec<(usize, BitVec, String)> = Vec::new();
+        let mut codebook: huffman::Intermediate<String> = huffman::Intermediate::new();
+        // record errors
+        let mut errors: Vec<IsAt<CodeDefinitionError>> = Vec::new();
+
+        for (linenum, line) in &mut lines {
+            let line = line.map_err(Error::Io)?;
+            // encoding definition part starts after and ends before empty line
+            if line.is_empty() {
+                if trailing {
+                    break;
+                } else {
+                    continue;
+                }
+            } else {
+                trailing = true;
+            }
+
+            // each encoding definition is tab seperated pair of word and encoding
+            match line.split_once('\t') {
+                None => {
+                    errors.push(IsAt {
+                        line: linenum,
+                        character: 0,
+                        is: CodeDefinitionError::MisformattedDefinition,
+                    });
+                    continue;
+                }
+                Some((word, code)) => {
+                    if word == "Symbol" && code == "Code" {
+                        continue;
+                    }
+                    let code = match code.parse::<util::Wrap<BitVec>>() {
+                        Err(position) => {
+                            errors.push(IsAt {
+                                line: linenum,
+                                character: word.len() + 1 + position,
+                                is: CodeDefinitionError::InvalidCode(CodeStringError::NonBinary),
+                            });
+                            continue;
+                        }
+                        Ok(bits) => bits.inner,
+                    };
+                    if let Some(old) = codebook.update(&code, word.to_string()) {
+                        errors.push(IsAt {
+                            line: linenum,
+                            character: 0,
+                            is: if word == old {
+                                // check for duplicate word
+                                CodeDefinitionError::DuplicateDefinitions
+                            } else {
+                                CodeDefinitionError::InvalidCode(CodeStringError::MalformedBinary)
+                            },
+                        });
+                        continue;
+                    };
+                }
+            }
+        }
+        // validate and convert Hashmap to Encodings
+        let codebook = codebook.harden().ok_or_else(|| {
+            errors.push(IsAt {
+                line: 0,
+                character: 0,
+                is: CodeDefinitionError::InsufficientDefinitions(
+                    codebook.missing().collect::<Vec<BitVec>>(),
+                ),
+            });
+            Error::InvalidCodeDefinition(errors)
+        })?;
+
+        // decode string
+        for (linenum, line) in &mut lines {
+            let line = line.map_err(Error::Io)?;
+            if line.is_empty() {
+                continue;
+            };
+            let decoded = codebook
+                .decode(
+                    line.parse::<util::Wrap<BitVec>>()
+                        .map_err(|position| {
+                            Error::InvalidCodeString(IsAt {
+                                line: linenum,
+                                character: position,
+                                is: CodeStringError::NonBinary,
+                            })
+                        })?
+                        .inner
+                        .as_bitslice(),
+                )
+                .map_err(|position| {
+                    Error::InvalidCodeString(IsAt {
+                        line: linenum,
+                        character: position,
+                        is: CodeStringError::MalformedBinary,
+                    })
+                });
+            println!(
+                "{}",
+                decoded?.fold(String::new(), |accm, symbol| accm + " " + symbol)
+            );
+        }
+        Ok(())
+    }
 }
 
 fn main() -> Result<(), Error> {
@@ -699,160 +863,12 @@ fn main() -> Result<(), Error> {
     let stdin = io::stdin();
     let mut stdin = stdin.lock();
 
-    macro_rules! println {
-        ($($arg:tt)*) => ({
-            writeln!(stdout, $($arg)*).map_err(Error::Io)?;
-        })
-    }
-
     // run each subcommands
     let result = match args.mode {
-        Mode::Encode(Encode { codebook_format }) => {
-            // get words from stdin, waits until EOF
-            let input = {
-                let mut input = String::new();
-                stdin.read_to_string(&mut input).map_err(Error::Io)?;
-                input
-            };
-            let words = || input.split_whitespace();
-            // derive the huffman encodings of words as a tree
-            let huffman_encodings: huffman::canonical::Tree<&str> =
-                huffman::canonical::Tree::from_sequence(&mut words()).ok_or(Error::NoStdin)?;
-
-            // print codebook
-            match codebook_format {
-                CodebookFormat::Hide => {}
-                CodebookFormat::Tsv => {
-                    println!("{}", huffman_encodings.codebook_tsv());
-                    println!();
-                }
-            }
-            // print encoded string
-            println!(
-                "{}",
-                util::format_bits(&huffman_encodings.encode_sequence(&mut words()).map_err(
-                    |_| Error::Unreachable("there shouldn't be words that has no encoding")
-                )?,)
-            );
-            Ok(())
-        }
-        Mode::Decode(Decode { .. }) => {
-            // get lines from stdin, one line at a time
-            let mut lines = stdin.lines().enumerate();
-
-            // skip newlines before encoding definitions
-            let mut trailing = false;
-
-            // record codes
-            // let mut dict: Vec<(usize, BitVec, String)> = Vec::new();
-            let mut codebook: huffman::Intermediate<String> = huffman::Intermediate::new();
-            // record errors
-            let mut errors: Vec<IsAt<CodeDefinitionError>> = Vec::new();
-
-            for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::Io)?;
-                // encoding definition part starts after and ends before empty line
-                if line.is_empty() {
-                    if trailing {
-                        break;
-                    } else {
-                        continue;
-                    }
-                } else {
-                    trailing = true;
-                }
-
-                // each encoding definition is tab seperated pair of word and encoding
-                match line.split_once('\t') {
-                    None => {
-                        errors.push(IsAt {
-                            line: linenum,
-                            character: 0,
-                            is: CodeDefinitionError::MisformattedDefinition,
-                        });
-                        continue;
-                    }
-                    Some((word, code)) => {
-                        if word == "Symbol" && code == "Code" {
-                            continue;
-                        }
-                        let code = match code.parse::<util::Wrap<BitVec>>() {
-                            Err(position) => {
-                                errors.push(IsAt {
-                                    line: linenum,
-                                    character: word.len() + 1 + position,
-                                    is: CodeDefinitionError::InvalidCode(
-                                        CodeStringError::NonBinary,
-                                    ),
-                                });
-                                continue;
-                            }
-                            Ok(bits) => bits.inner,
-                        };
-                        if let Some(old) = codebook.update(&code, word.to_string()) {
-                            errors.push(IsAt {
-                                line: linenum,
-                                character: 0,
-                                is: if word == old {
-                                    // check for duplicate word
-                                    CodeDefinitionError::DuplicateDefinitions
-                                } else {
-                                    CodeDefinitionError::InvalidCode(
-                                        CodeStringError::MalformedBinary,
-                                    )
-                                },
-                            });
-                            continue;
-                        };
-                    }
-                }
-            }
-            // validate and convert Hashmap to Encodings
-            let codebook = codebook.harden().ok_or_else(|| {
-                errors.push(IsAt {
-                    line: 0,
-                    character: 0,
-                    is: CodeDefinitionError::InsufficientDefinitions(
-                        codebook.missing().collect::<Vec<BitVec>>(),
-                    ),
-                });
-                Error::InvalidCodeDefinition(errors)
-            })?;
-
-            // decode string
-            for (linenum, line) in &mut lines {
-                let line = line.map_err(Error::Io)?;
-                if line.is_empty() {
-                    continue;
-                };
-                let decoded = codebook
-                    .decode(
-                        line.parse::<util::Wrap<BitVec>>()
-                            .map_err(|position| {
-                                Error::InvalidCodeString(IsAt {
-                                    line: linenum,
-                                    character: position,
-                                    is: CodeStringError::NonBinary,
-                                })
-                            })?
-                            .inner
-                            .as_bitslice(),
-                    )
-                    .map_err(|position| {
-                        Error::InvalidCodeString(IsAt {
-                            line: linenum,
-                            character: position,
-                            is: CodeStringError::MalformedBinary,
-                        })
-                    });
-                println!(
-                    "{}",
-                    decoded?.fold(String::new(), |accm, symbol| accm + " " + symbol)
-                );
-            }
-            Ok(())
-        }
+        Mode::Encode(config) => Cli::encode(config, &mut stdin, &mut stdout),
+        Mode::Decode(config) => Cli::decode(config, &mut stdin, &mut stdout),
     };
+
     stdout.flush().map_err(Error::Io)?;
     result
 }

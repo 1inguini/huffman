@@ -285,11 +285,9 @@ mod huffman {
 
         /// Converts `Node<Option<Symbol>>` to `Node<Symbol>`.
         /// Returns the given node unchanged if there is any `None` inside.
-        pub fn harden(self) -> Result<Tree<Symbol>, Self> {
-            Ok(Tree {
-                inner: Box::new(self.node.harden().map_err(|node| Intermediate {
-                    node: Box::new(node),
-                })?),
+        pub fn harden(&self) -> Option<Tree<&Symbol>> {
+            Some(Tree {
+                inner: Box::new(self.node.harden()?),
             })
         }
 
@@ -346,11 +344,11 @@ mod huffman {
     {
         /// Converts Node<Option<Symbol>> to Node<Symbol>.
         /// Returns the given node unchanged if there is any None inside.
-        fn harden(self) -> Result<Node<Symbol>, Self> {
+        fn harden(&self) -> Option<Node<&Symbol>> {
             match self {
-                Node::Symbol(Some(symbol)) => Ok(Node::Symbol(symbol)),
-                node @ Node::Symbol(None) => Err(node),
-                Node::Branch { zero, one } => Ok(Node::Branch {
+                Node::Symbol(Some(symbol)) => Some(Node::Symbol(symbol)),
+                Node::Symbol(None) => None,
+                Node::Branch { zero, one } => Some(Node::Branch {
                     zero: Box::new((*zero).harden()?),
                     one: Box::new((*one).harden()?),
                 }),
@@ -814,7 +812,7 @@ fn main() -> Result<(), Error> {
                 }
             }
             // validate and convert Hashmap to Encodings
-            let codebook = codebook.harden().map_err(|codebook| {
+            let codebook = codebook.harden().ok_or_else(|| {
                 errors.push(IsAt {
                     line: 0,
                     character: 0,

@@ -291,9 +291,32 @@ mod huffman {
             })
         }
 
-        /// collect code that has no symbol associated
+        /// collect codes that has no symbol associated
         pub fn missing(&self) -> impl Iterator<Item = BitVec> {
-            self.node.missing()
+            // self.node.missing()
+            let mut vacant_codes = Vec::new();
+            let mut stack = vec![(BitVec::new(), self.node.as_ref())];
+            while let Some((code, node)) = stack.pop() {
+                match node {
+                    Node::Symbol(None) => {
+                        vacant_codes.push(code);
+                    }
+                    Node::Symbol(Some(..)) => {}
+                    Node::Branch { zero, one } => {
+                        {
+                            let mut code = code.clone();
+                            code.push(false);
+                            stack.push((code, zero));
+                        }
+                        {
+                            let mut code = code;
+                            code.push(true);
+                            stack.push((code, one));
+                        }
+                    }
+                }
+            }
+            vacant_codes.into_iter()
         }
     }
 
@@ -352,33 +375,6 @@ mod huffman {
                     zero: Box::new((*zero).harden()?),
                     one: Box::new((*one).harden()?),
                 }),
-            }
-        }
-
-        /// collect code that has no symbol associated
-        fn missing(&self) -> impl Iterator<Item = BitVec> {
-            let mut result: Vec<BitVec> = Vec::new();
-            self.missing_helper(&mut result, BitVec::new());
-            result.into_iter()
-        }
-        fn missing_helper(&self, vacant_codes: &mut Vec<BitVec>, code: BitVec) {
-            match self {
-                Node::Symbol(None) => {
-                    vacant_codes.push(code);
-                }
-                Node::Symbol(Some(..)) => mem::drop(code),
-                Node::Branch { zero, one } => {
-                    {
-                        let mut code = code.clone();
-                        code.push(false);
-                        zero.missing_helper(vacant_codes, code);
-                    }
-                    {
-                        let mut code = code;
-                        code.push(true);
-                        one.missing_helper(vacant_codes, code);
-                    }
-                }
             }
         }
     }

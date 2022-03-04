@@ -165,10 +165,10 @@ mod huffman {
         }
 
         /// encode symbol sequence
-        pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
-        where
-            I: Iterator<Item = Symbol>,
-        {
+        pub fn encode_sequence(
+            &self,
+            symbols: &mut dyn Iterator<Item = Symbol>,
+        ) -> Result<BitVec, usize> {
             let mut result: BitVec = BitVec::new();
             for (i, symbol) in symbols.enumerate() {
                 let mut code = self.encode(&symbol).ok_or(i)?;

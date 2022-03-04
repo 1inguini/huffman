@@ -401,7 +401,6 @@ mod huffman {
         use std::{
             cmp::{Ord, Ordering, PartialEq, PartialOrd},
             collections::VecDeque,
-            fmt::Display,
             hash::Hash,
             ops::Index,
         };
@@ -690,17 +689,12 @@ struct Decode {
     symbol_type: SymbolType,
 }
 
-#[derive(Debug)]
-struct Cli<'i, 'o, In, Out> {
-    stdin: &'i mut In,
-    stdout: &'o mut Out,
+struct Cli<'i, 'o> {
+    stdin: &'i mut dyn BufRead,
+    stdout: &'o mut dyn Write,
 }
 
-impl<'i, 'o, In, Out> Cli<'i, 'o, In, Out>
-where
-    In: BufRead,
-    Out: Write,
-{
+impl<'i, 'o> Cli<'i, 'o> {
     fn init() -> Config {
         // abort when there is no input from stdin
         if atty::is(atty::Stream::Stdin) {
@@ -780,11 +774,7 @@ where
         Ok(())
     }
 
-    fn decode(self, Decode { .. }: Decode) -> Result<(), Error>
-    where
-        In: BufRead,
-        Out: Write,
-    {
+    fn decode(self, Decode { .. }: Decode) -> Result<(), Error> {
         let Cli { stdin, stdout, .. } = self;
         macro_rules! println {
             ($($arg:tt)*) => ({
@@ -904,7 +894,7 @@ where
 }
 
 fn main() -> Result<(), Error> {
-    let args = Cli::<io::StdinLock, BufWriter<io::Stdout>>::init();
+    let args = Cli::init();
 
     // prepare stdout with buffering
     let stdout = io::stdout();

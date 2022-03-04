@@ -1,22 +1,10 @@
-use bitvec::vec::BitVec;
-use std::{
-    cmp::Ord,
-    collections::HashMap,
-    fmt::Display,
-    hash::Hash,
-    io,
-    io::{BufRead, BufWriter, Write},
-};
-use util::IsAt;
-
 mod util {
     use bitvec::{slice::BitSlice, vec::BitVec};
     use std::{cmp::Ordering, collections::HashMap, hash::Hash, str::FromStr};
 
     /// count occurrences of each word
-    pub fn count_occurrences<I, T>(words: &mut I) -> HashMap<T, usize>
+    pub fn count_occurrences<T>(words: &mut dyn Iterator<Item = T>) -> HashMap<T, usize>
     where
-        I: Iterator<Item = T>,
         T: Eq + Hash,
     {
         let mut words_occurrences: HashMap<T, usize> = HashMap::new();
@@ -460,9 +448,8 @@ mod huffman {
             }
 
             /// count occurence of each symbol in givin symbol sequence and construct Huffman tree
-            pub fn from_sequence<I>(sequence: &mut I) -> Option<Self>
+            pub fn from_sequence(sequence: &mut dyn Iterator<Item = Symbol>) -> Option<Self>
             where
-                I: Iterator<Item = Symbol>,
                 Symbol: Hash,
             {
                 Self::new(util::count_occurrences(sequence).into_iter())
@@ -502,10 +489,10 @@ mod huffman {
             }
 
             /// encode symbol sequence
-            pub fn encode_sequence<I>(&self, symbols: &mut I) -> Result<BitVec, usize>
-            where
-                I: Iterator<Item = Symbol>,
-            {
+            pub fn encode_sequence(
+                &self,
+                symbols: &mut dyn Iterator<Item = Symbol>,
+            ) -> Result<BitVec, usize> {
                 let mut result: BitVec = BitVec::new();
                 for (i, symbol) in symbols.enumerate() {
                     let mut code = self.encode(&symbol).ok_or(i)?;
@@ -643,13 +630,23 @@ mod huffman {
     }
 }
 
-// options
-use clap::{ArgEnum, CommandFactory, Parser, Subcommand};
+use bitvec::vec::BitVec;
+use std::{
+    cmp::Ord,
+    collections::HashMap,
+    fmt::Display,
+    hash::Hash,
+    io::{self, BufRead, BufWriter, Write},
+    marker::PhantomData,
+};
+use util::IsAt;
 
+/// options
+use clap::{ArgEnum, CommandFactory, Parser, Subcommand};
 /// represent all acceptable arguments
 #[derive(Debug, Parser)]
 #[clap(author, version, about, long_about = None)]
-struct Cli {
+struct Config {
     #[clap(subcommand)]
     mode: Mode,
 }
@@ -693,68 +690,74 @@ struct Decode {
     symbol_type: SymbolType,
 }
 
-impl Cli {
-    fn init() -> Cli {
-        // get arguments
-        let cli = Cli::parse();
+#[derive(Debug)]
+struct Cli<'i, 'o, In, Out> {
+    stdin: &'i mut In,
+    stdout: &'o mut Out,
+}
 
+impl<'i, 'o, In, Out> Cli<'i, 'o, In, Out>
+where
+    In: BufRead,
+    Out: Write,
+{
+    fn init() -> Config {
         // abort when there is no input from stdin
         if atty::is(atty::Stream::Stdin) {
-            Cli::command()
+            Config::command()
                 .error(
                     clap::ErrorKind::MissingRequiredArgument,
                     "huffman only accepts string from stdin.",
                 )
                 .exit();
             // return Err(Error::NoStdin);
+        } else {
+            // get arguments
+            Config::parse()
         }
-        cli
     }
 
-    fn encode<In, Out>(config: Encode, stdin: &mut In, stdout: &mut Out) -> Result<(), Error>
-    where
-        In: BufRead,
-        Out: Write,
-    {
+    fn encode(self, config: Encode) -> Result<(), Error> {
         // get words from stdin, waits until EOF
         let input = {
             let mut input = String::new();
-            stdin.read_to_string(&mut input).map_err(Error::Io)?;
+            self.stdin.read_to_string(&mut input).map_err(Error::Io)?;
             input
         };
 
         match config.symbol_type {
-            SymbolType::Words => Cli::encode_generic(
-                config,
-                stdout,
-                |s: &&str| s.to_string(),
-                || input.split_whitespace(),
-            ),
-            SymbolType::Bytes => Cli::encode_generic(
-                config,
-                stdout,
-                |byte| format!("0x{:>02X}", byte),
-                || input.bytes(),
-            ),
+            SymbolType::Words => {
+                let symbols = || input.split_whitespace();
+                self.encode_generic(
+                    config,
+                    &|s: &&str| s.to_string(),
+                    &mut symbols(),
+                    &mut symbols(),
+                )
+            }
+            SymbolType::Bytes => {
+                let symbols = || input.bytes();
+                self.encode_generic(
+                    config,
+                    &|byte| format!("0x{:>02X}", byte),
+                    &mut symbols(),
+                    &mut symbols(),
+                )
+            }
         }
     }
 
-    fn encode_generic<Out, Symbol, D, I, F>(
+    fn encode_generic<Symbol: Ord + Hash>(
+        self,
         config: Encode,
-        stdout: &mut Out,
-        display: D,
-        symbols: F,
-    ) -> Result<(), Error>
-    where
-        Out: Write,
-        Symbol: Ord + Hash,
-        D: Fn(&Symbol) -> String,
-        I: Iterator<Item = Symbol>,
-        F: Fn() -> I,
-    {
+        display: &dyn Fn(&Symbol) -> String,
+        symbols0: &mut dyn Iterator<Item = Symbol>,
+        symbols1: &mut dyn Iterator<Item = Symbol>,
+    ) -> Result<(), Error> {
+        let Cli { stdout, .. } = self;
         // derive the huffman encodings of words as a tree
         let huffman_encodings =
-            huffman::canonical::Tree::from_sequence(&mut symbols()).ok_or(Error::NoStdin)?;
+            huffman::canonical::Tree::from_sequence(symbols0).ok_or(Error::NoStdin)?;
 
         // print codebook
         match config.codebook_format {
@@ -769,19 +772,20 @@ impl Cli {
         writeln!(
             stdout,
             "{}",
-            util::format_bits(&huffman_encodings.encode_sequence(&mut symbols()).map_err(
-                |_| Error::Unreachable("there shouldn't be words that has no encoding")
-            )?,)
+            util::format_bits(&huffman_encodings.encode_sequence(symbols1).map_err(|_| {
+                Error::Unreachable("there shouldn't be words that has no encoding")
+            })?,)
         )
         .map_err(Error::Io)?;
         Ok(())
     }
 
-    fn decode<In, Out>(Decode { .. }: Decode, stdin: &mut In, stdout: &mut Out) -> Result<(), Error>
+    fn decode(self, Decode { .. }: Decode) -> Result<(), Error>
     where
         In: BufRead,
         Out: Write,
     {
+        let Cli { stdin, stdout, .. } = self;
         macro_rules! println {
             ($($arg:tt)*) => ({
                 writeln!(stdout, $($arg)*).map_err(Error::Io)?;
@@ -900,20 +904,22 @@ impl Cli {
 }
 
 fn main() -> Result<(), Error> {
-    let args = Cli::init();
+    let args = Cli::<io::StdinLock, BufWriter<io::Stdout>>::init();
 
     // prepare stdout with buffering
     let stdout = io::stdout();
-    let mut stdout = BufWriter::new(stdout.lock());
+    let stdout = &mut BufWriter::new(stdout.lock());
 
     // prepare stdin with buffering
     let stdin = io::stdin();
-    let mut stdin = stdin.lock();
+    let stdin = &mut stdin.lock();
+
+    let cli = Cli { stdin, stdout };
 
     // run each subcommands
     let result = match args.mode {
-        Mode::Encode(config) => Cli::encode(config, &mut stdin, &mut stdout),
-        Mode::Decode(config) => Cli::decode(config, &mut stdin, &mut stdout),
+        Mode::Encode(config) => cli.encode(config),
+        Mode::Decode(config) => cli.decode(config),
     };
 
     stdout.flush().map_err(Error::Io)?;
